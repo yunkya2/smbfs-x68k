@@ -1,0 +1,3 @@
+[submodule "libsmb2"]
+	path = libsmb2
+	url = https://github.com/yunkya2/libsmb2.git
