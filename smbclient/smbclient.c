@@ -719,6 +719,123 @@ static int list_shares(const char *server, const char *user)
   return ret;
 }
 
+static int execute_command(struct smb2_context *smb2, char *cmdline)
+{
+  char *cmd, *arg;
+  
+  // Skip empty lines
+  if (strlen(cmdline) == 0) {
+    return 0;
+  }
+  
+  // Parse command and argument
+  cmd = strtok(cmdline, " \t");
+  arg = strtok(NULL, "");  // Get rest of line as argument
+  
+  if (cmd == NULL) {
+    return 0;
+  }
+  
+  if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0) {
+    return 1;  // Signal to exit
+  } else if (strcmp(cmd, "help") == 0) {
+    printf("Available commands:\n");
+    printf("  ls [path]     - List directory contents (current dir if no path)\n");
+    printf("  cd <path>     - Change directory\n");
+    printf("  cd            - Show current directory\n");
+    printf("  mkdir <path>  - Create directory\n");
+    printf("  rmdir <path>  - Remove empty directory\n");
+    printf("  rm <path>     - Remove file\n");
+    printf("  stat <path>   - Show file/directory information\n");
+    printf("  statvfs [path]- Show filesystem statistics\n");
+    printf("  get <remote> [local] - Download file from server\n");
+    printf("  put <local> [remote] - Upload file to server\n");
+    printf("  lcd [path]    - Change local directory\n");
+    printf("  quit/exit     - Exit the program\n");
+    printf("  help          - Show this help\n");
+  } else if (strcmp(cmd, "ls") == 0) {
+    arg = trim_spaces(arg);
+    cmd_ls(smb2, arg);  // arg can be NULL for current directory
+  } else if (strcmp(cmd, "cd") == 0 || strcmp(cmd, "chdir") == 0) {
+    arg = trim_spaces(arg);
+    cmd_cd(smb2, arg);  // arg can be NULL to show current directory
+  } else if (strcmp(cmd, "mkdir") == 0) {
+    arg = trim_spaces(arg);
+    cmd_mkdir(smb2, arg);
+  } else if (strcmp(cmd, "rmdir") == 0) {
+    arg = trim_spaces(arg);
+    cmd_rmdir(smb2, arg);
+  } else if (strcmp(cmd, "rm") == 0) {
+    arg = trim_spaces(arg);
+    cmd_rm(smb2, arg);
+  } else if (strcmp(cmd, "stat") == 0) {
+    arg = trim_spaces(arg);
+    cmd_stat(smb2, arg);
+  } else if (strcmp(cmd, "statvfs") == 0) {
+    arg = trim_spaces(arg);
+    cmd_statvfs(smb2, arg);  // arg can be NULL for current directory
+  } else if (strcmp(cmd, "lcd") == 0) {
+    arg = trim_spaces(arg);
+    cmd_lcd(arg);  // arg can be NULL to show current local directory
+  } else if (strcmp(cmd, "get") == 0) {
+    char *remote_arg = NULL, *local_arg = NULL;
+    int argc = parse_two_args(arg, &remote_arg, &local_arg);
+    if (argc == 0) {
+      printf("Usage: get <remote_path> [local_path]\n");
+    } else {
+      cmd_get(smb2, remote_arg, local_arg);
+    }
+  } else if (strcmp(cmd, "put") == 0) {
+    char *local_arg = NULL, *remote_arg = NULL;
+    int argc = parse_two_args(arg, &local_arg, &remote_arg);
+    if (argc == 0) {
+      printf("Usage: put <local_path> [remote_path]\n");
+    } else {
+      cmd_put(smb2, local_arg, remote_arg);
+    }
+  } else {
+    printf("Unknown command: %s\n", cmd);
+    printf("Type 'help' for available commands\n");
+  }
+  
+  return 0;  // Continue execution
+}
+
+static int execute_command_string(struct smb2_context *smb2, const char *command_string)
+{
+  char *commands = strdup(command_string);
+  char *cmd_copy;
+  char *token;
+  int result = 0;
+  
+  if (commands == NULL) {
+    printf("Memory allocation failed\n");
+    return 1;
+  }
+  
+  // Split commands by semicolon
+  cmd_copy = commands;
+  while ((token = strtok(cmd_copy, ";")) != NULL) {
+    cmd_copy = NULL;  // For subsequent calls to strtok
+    
+    // Trim leading/trailing spaces
+    char *trimmed = trim_spaces(token);
+    if (trimmed != NULL) {
+      char *cmd_line = strdup(trimmed);
+      if (cmd_line != NULL) {
+        result = execute_command(smb2, cmd_line);
+        free(cmd_line);
+        if (result) {
+          break;  // Exit command was issued
+        }
+      }
+    }
+  }
+  
+  free(commands);
+  return result;
+}
+
 //****************************************************************************
 // Dummy program entry
 //****************************************************************************
@@ -727,8 +844,11 @@ static void usage(void)
 {
   fprintf(stderr, "Usage:\n");
   fprintf(stderr, "smbclient <smb2-url>                  - Interactive mode\n");
-  fprintf(stderr, "smbclient -L <smb2-url>               - List available services\n\n");
+  fprintf(stderr, "smbclient -L <smb2-url>               - List available services\n");
+  fprintf(stderr, "smbclient <smb2-url> -c \"<commands>\"   - Execute commands\n\n");
   fprintf(stderr, "URL format: smb://[<domain;][<username>@]<host>>[:<port>][/<share>/<path>]\n");
+  fprintf(stderr, "\nCommands can be separated by semicolons (;)\n");
+  fprintf(stderr, "Example: smbclient smb://server/share -c \"ls; cd dir; ls\"\n");
 }
 
 int main(int argc, char *argv[])
@@ -736,7 +856,9 @@ int main(int argc, char *argv[])
   struct smb2_context *smb2;
   struct smb2_url *url;
   int list_mode = 0;
+  int command_mode = 0;
   int url_index = 1;
+  char *command_string = NULL;
 
   // Parse command line options
   if (argc < 2) {
@@ -744,10 +866,34 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
+  // Check for -L option first
   if (strcmp(argv[1], "-L") == 0) {
     list_mode = 1;
     url_index = 2;
     if (argc < 3) {
+      usage();
+      exit(1);
+    }
+  } else {
+    // Check for -c option in various positions
+    for (int i = 1; i < argc - 1; i++) {
+      if (strcmp(argv[i], "-c") == 0) {
+        command_mode = 1;
+        command_string = argv[i + 1];
+        
+        // URL should be before -c option
+        if (i == 1) {
+          printf("Error: URL must be specified before -c option\n");
+          usage();
+          exit(1);
+        }
+        url_index = 1;  // URL is always first when -c is used
+        break;
+      }
+    }
+    
+    // If no -c option found, check if we have enough arguments
+    if (!command_mode && argc < 2) {
       usage();
       exit(1);
     }
@@ -783,7 +929,7 @@ int main(int argc, char *argv[])
     exit(result);
   }
 
-  // Interactive mode
+  // Command execution mode or interactive mode
   smb2 = smb2_init_context();
   if (smb2 == NULL) {
     fprintf(stderr, "Failed to init context\n");
@@ -803,91 +949,29 @@ int main(int argc, char *argv[])
     exit(10);
   }
 
-  char cmdline[256];
-  char *cmd, *arg;
-  
   // Initialize local directory
   strcpy(local_dir, ".");
   
-  printf("SMB Client - Type 'help' for commands, 'quit' to exit\n");
-  
-  while (1) {
-    printf("smb:%s> ", current_dir);
-    if (fgets(cmdline, sizeof(cmdline), stdin) == NULL) {
-      break;
-    }
+  if (command_mode) {
+    // Execute the specified command(s) and exit
+    execute_command_string(smb2, command_string);
+  } else {
+    // Interactive mode
+    char cmdline[256];
+    
+    printf("SMB Client - Type 'help' for commands, 'quit' to exit\n");
+    
+    while (1) {
+      printf("smb:%s> ", current_dir);
+      if (fgets(cmdline, sizeof(cmdline), stdin) == NULL) {
+        break;
+      }
 
-    trim_newline(cmdline);
-    
-    // Skip empty lines
-    if (strlen(cmdline) == 0) {
-      continue;
-    }
-    
-    // Parse command and argument
-    cmd = strtok(cmdline, " \t");
-    arg = strtok(NULL, "");  // Get rest of line as argument
-    
-    if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0) {
-      break;
-    } else if (strcmp(cmd, "help") == 0) {
-      printf("Available commands:\n");
-      printf("  ls [path]     - List directory contents (current dir if no path)\n");
-      printf("  cd <path>     - Change directory\n");
-      printf("  cd            - Show current directory\n");
-      printf("  mkdir <path>  - Create directory\n");
-      printf("  rmdir <path>  - Remove empty directory\n");
-      printf("  rm <path>     - Remove file\n");
-      printf("  stat <path>   - Show file/directory information\n");
-      printf("  statvfs [path]- Show filesystem statistics\n");
-      printf("  get <remote> [local] - Download file from server\n");
-      printf("  put <local> [remote] - Upload file to server\n");
-      printf("  lcd [path]    - Change local directory\n");
-      printf("  quit/exit     - Exit the program\n");
-      printf("  help          - Show this help\n");
-    } else if (strcmp(cmd, "ls") == 0) {
-      arg = trim_spaces(arg);
-      cmd_ls(smb2, arg);  // arg can be NULL for current directory
-    } else if (strcmp(cmd, "cd") == 0 || strcmp(cmd, "chdir") == 0) {
-      arg = trim_spaces(arg);
-      cmd_cd(smb2, arg);  // arg can be NULL to show current directory
-    } else if (strcmp(cmd, "mkdir") == 0) {
-      arg = trim_spaces(arg);
-      cmd_mkdir(smb2, arg);
-    } else if (strcmp(cmd, "rmdir") == 0) {
-      arg = trim_spaces(arg);
-      cmd_rmdir(smb2, arg);
-    } else if (strcmp(cmd, "rm") == 0) {
-      arg = trim_spaces(arg);
-      cmd_rm(smb2, arg);
-    } else if (strcmp(cmd, "stat") == 0) {
-      arg = trim_spaces(arg);
-      cmd_stat(smb2, arg);
-    } else if (strcmp(cmd, "statvfs") == 0) {
-      arg = trim_spaces(arg);
-      cmd_statvfs(smb2, arg);  // arg can be NULL for current directory
-    } else if (strcmp(cmd, "lcd") == 0) {
-      arg = trim_spaces(arg);
-      cmd_lcd(arg);  // arg can be NULL to show current local directory
-    } else if (strcmp(cmd, "get") == 0) {
-      char *remote_arg = NULL, *local_arg = NULL;
-      int argc = parse_two_args(arg, &remote_arg, &local_arg);
-      if (argc == 0) {
-        printf("Usage: get <remote_path> [local_path]\n");
-      } else {
-        cmd_get(smb2, remote_arg, local_arg);
+      trim_newline(cmdline);
+      
+      if (execute_command(smb2, cmdline)) {
+        break;  // Exit command was issued
       }
-    } else if (strcmp(cmd, "put") == 0) {
-      char *local_arg = NULL, *remote_arg = NULL;
-      int argc = parse_two_args(arg, &local_arg, &remote_arg);
-      if (argc == 0) {
-        printf("Usage: put <local_path> [remote_path]\n");
-      } else {
-        cmd_put(smb2, local_arg, remote_arg);
-      }
-    } else {
-      printf("Unknown command: %s\n", cmd);
-      printf("Type 'help' for available commands\n");
     }
   }
 
