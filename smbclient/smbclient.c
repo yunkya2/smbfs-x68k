@@ -276,6 +276,56 @@ static char* resolve_path_utf8(const char *sjis_path)
   return resolved + 1;
 }
 
+static const char *format_time(uint64_t timestamp)
+{
+  static char time_str[64];
+  time_t t = (time_t)timestamp;
+
+  t += 9 * 3600; // Convert UTC to JST (UTC+9)
+  struct tm *tm_info = localtime(&t);
+  
+  if (tm_info) {
+    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+  } else {
+    strcpy(time_str, "Invalid time");
+  }
+  
+  return time_str;
+}
+
+static const char *format_size(uint64_t size)
+{
+  static char size_str[32];
+
+  if (size >= 1024ULL * 1024 * 1024 * 1024) {
+    sprintf(size_str, "%.1f TB", (double)size / (1024ULL * 1024 * 1024 * 1024));
+  } else if (size >= 1024ULL * 1024 * 1024) {
+    sprintf(size_str, "%.1f GB", (double)size / (1024ULL * 1024 * 1024));
+  } else if (size >= 1024ULL * 1024) {
+    sprintf(size_str, "%.1f MB", (double)size / (1024ULL * 1024));
+  } else if (size >= 1024ULL) {
+    sprintf(size_str, "%.1f KB", (double)size / 1024ULL);
+  } else {
+    sprintf(size_str, "%lu bytes", (unsigned long)size);
+  }
+  
+  return size_str;
+}
+
+static const char *format_uint64(uint64_t value)
+{
+  static char buf[32];
+  char *p = buf;
+
+  if (value >= 1000000000ULL) {
+    sprintf(p, "%lu", (unsigned long)(value / 1000000000ULL));
+    p += strlen(buf);
+    value %= 1000000000ULL;
+  }
+  sprintf(p, "%lu", (unsigned long)value);
+  return buf;
+}
+
 //****************************************************************************
 // Command implementations
 //****************************************************************************
@@ -301,8 +351,8 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
   }
 
   printf("Directory listing for '%s':\n", target_path);
-  printf("%-30s %-10s %10s\n", "Name", "Type", "Size");
-  printf("%-30s %-10s %10s\n", "----", "----", "----");
+  printf("  %-30s %-8s %8s %s\n", "Name", "Type", "Size", "Time");
+  printf("  %-30s %-8s %8s %s\n", "----", "----", "----", "----");
 
   while ((ent = smb2_readdir(smb2, dir))) {
     char *sjis_name;
@@ -324,7 +374,11 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
     
     // Convert filename from UTF-8 to SJIS for display
     sjis_name = utf8_to_sjis(ent->name);
-    printf("%-30s %-10s %10lu\n", sjis_name ? sjis_name : ent->name, type, (unsigned long)ent->st.smb2_size);
+    printf("  %-30s %-8s %8lu %s\n",
+           sjis_name ? sjis_name : ent->name,
+           type,
+           (unsigned long)ent->st.smb2_size,
+           format_time(ent->st.smb2_mtime));
     if (sjis_name) free(sjis_name);
   }
 
@@ -432,40 +486,6 @@ static void cmd_rm(struct smb2_context *smb2, const char *path)
 
 //----------------------------------------------------------------------------
 
-static const char* format_time(uint64_t timestamp)
-{
-  static char time_str[64];
-  time_t t = (time_t)timestamp;
-  struct tm *tm_info = localtime(&t);
-  
-  if (tm_info) {
-    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
-  } else {
-    strcpy(time_str, "Invalid time");
-  }
-  
-  return time_str;
-}
-
-static const char* format_size(uint64_t size)
-{
-  static char size_str[32];
-  
-  if (size >= 1024ULL * 1024 * 1024 * 1024) {
-    sprintf(size_str, "%.1f TB", (double)size / (1024ULL * 1024 * 1024 * 1024));
-  } else if (size >= 1024ULL * 1024 * 1024) {
-    sprintf(size_str, "%.1f GB", (double)size / (1024ULL * 1024 * 1024));
-  } else if (size >= 1024ULL * 1024) {
-    sprintf(size_str, "%.1f MB", (double)size / (1024ULL * 1024));
-  } else if (size >= 1024ULL) {
-    sprintf(size_str, "%.1f KB", (double)size / 1024ULL);
-  } else {
-    sprintf(size_str, "%lu bytes", (unsigned long)size);
-  }
-  
-  return size_str;
-}
-
 static void cmd_stat(struct smb2_context *smb2, const char *path)
 {
   char *target_path;
@@ -501,8 +521,8 @@ static void cmd_stat(struct smb2_context *smb2, const char *path)
   
   printf("File: %s\n", target_path);
   printf("Type: %s\n", type);
-  printf("Size: %s (%llu bytes)\n", format_size(st.smb2_size), (unsigned long long)st.smb2_size);
-  printf("Inode: %llu\n", (unsigned long long)st.smb2_ino);
+  printf("Size: %s (%s bytes)\n", format_size(st.smb2_size), format_uint64(st.smb2_size));
+  printf("Inode: %s\n", format_uint64(st.smb2_ino));
   printf("Links: %lu\n", (unsigned long)st.smb2_nlink);
   printf("Access time: %s\n", format_time(st.smb2_atime));
   printf("Modify time: %s\n", format_time(st.smb2_mtime));
@@ -538,20 +558,12 @@ static void cmd_statvfs(struct smb2_context *smb2, const char *path)
   
   printf("Filesystem statistics for: %s\n", target_path);
   printf("Block size:       %lu bytes\n", (unsigned long)statvfs.f_bsize);
-  printf("Fragment size:    %lu bytes\n", (unsigned long)statvfs.f_frsize);
-  printf("Total blocks:     %llu\n", (unsigned long long)statvfs.f_blocks);
-  printf("Free blocks:      %llu\n", (unsigned long long)statvfs.f_bfree);
-  printf("Available blocks: %llu\n", (unsigned long long)statvfs.f_bavail);
-  printf("Total space:      %s (%llu bytes)\n", format_size(total_space), total_space);
-  printf("Used space:       %s (%llu bytes)\n", format_size(used_space), used_space);
-  printf("Free space:       %s (%llu bytes)\n", format_size(free_space), free_space);
+  printf("Total blocks:     %s\n", format_uint64(statvfs.f_blocks));
+  printf("Free blocks:      %s\n", format_uint64(statvfs.f_bfree));
+  printf("Total space:      %s (%s bytes)\n", format_size(total_space), format_uint64(total_space));
+  printf("Used space:       %s (%s bytes)\n", format_size(used_space), format_uint64(used_space));
+  printf("Free space:       %s (%s bytes)\n", format_size(free_space), format_uint64(free_space));
   printf("Usage:            %.1f%%\n", usage_percent);
-  printf("Total inodes:     %lu\n", (unsigned long)statvfs.f_files);
-  printf("Free inodes:      %lu\n", (unsigned long)statvfs.f_ffree);
-  printf("Available inodes: %lu\n", (unsigned long)statvfs.f_favail);
-  printf("Filesystem ID:    0x%08lx\n", (unsigned long)statvfs.f_fsid);
-  printf("Mount flags:      0x%08lx\n", (unsigned long)statvfs.f_flag);
-  printf("Max filename:     %lu\n", (unsigned long)statvfs.f_namemax);
 }
 
 //----------------------------------------------------------------------------
@@ -745,14 +757,14 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
   }
   
   // Open local file for reading
-  local_fd = open(target_local, O_RDONLY);
+  local_fd = open(target_local, O_RDONLY | O_BINARY);
   if (local_fd < 0) {
     printf("Failed to open local file '%s': %s\n", target_local, strerror(errno));
     return;
   }
   
   // Open remote file for writing
-  fh = smb2_open(smb2, target_remote, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY);
+  fh = smb2_open(smb2, target_remote, O_WRONLY | O_CREAT | O_TRUNC);
   if (fh == NULL) {
     printf("Failed to create remote file '%s': %s\n", target_remote, smb2_get_error(smb2));
     close(local_fd);
