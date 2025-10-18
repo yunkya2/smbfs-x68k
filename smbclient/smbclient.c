@@ -42,6 +42,7 @@
 #include <libsmb2.h>
 #include <libsmb2-raw.h>
 #include <libsmb2-dcerpc-srvsvc.h>
+#include "iconv_mini.h"
 
 //****************************************************************************
 // Global variables
@@ -82,6 +83,57 @@ static char* trim_spaces(char *arg)
   while (end > arg && (*end == ' ' || *end == '\t')) *end-- = '\0';
   
   return arg;
+}
+
+// Character encoding conversion helpers
+static char* sjis_to_utf8(const char *sjis_str)
+{
+  if (sjis_str == NULL) return NULL;
+  
+  size_t in_len = strlen(sjis_str);
+  size_t out_len = in_len * 3 + 1; // UTF-8 can be up to 3 bytes per SJIS character
+  char *utf8_str = malloc(out_len);
+  if (utf8_str == NULL) return NULL;
+  
+  char *src_buf = (char *)sjis_str;  // Cast away const for iconv API
+  char *dst_buf = utf8_str;
+  size_t src_len = in_len;
+  size_t dst_len = out_len - 1; // Reserve space for null terminator
+  
+  if (iconv_s2u(&src_buf, &src_len, &dst_buf, &dst_len) < 0) {
+    free(utf8_str);
+    return NULL;
+  }
+  
+  // Add null terminator
+  *dst_buf = '\0';
+  
+  return utf8_str;
+}
+
+static char* utf8_to_sjis(const char *utf8_str)
+{
+  if (utf8_str == NULL) return NULL;
+  
+  size_t in_len = strlen(utf8_str);
+  size_t out_len = in_len * 2 + 1; // SJIS can be up to 2 bytes per UTF-8 character
+  char *sjis_str = malloc(out_len);
+  if (sjis_str == NULL) return NULL;
+  
+  char *src_buf = (char *)utf8_str;  // Cast away const for iconv API
+  char *dst_buf = sjis_str;
+  size_t src_len = in_len;
+  size_t dst_len = out_len - 1; // Reserve space for null terminator
+  
+  if (iconv_u2s(&src_buf, &src_len, &dst_buf, &dst_len) < 0) {
+    free(sjis_str);
+    return NULL;
+  }
+  
+  // Add null terminator
+  *dst_buf = '\0';
+  
+  return sjis_str;
 }
 
 static int parse_two_args(char *arg_str, char **arg1, char **arg2)
@@ -153,6 +205,36 @@ static char* resolve_path(const char *path)
   return resolved;
 }
 
+static char* resolve_path_utf8(const char *sjis_path)
+{
+  static char resolved[1024];
+  char *utf8_path;
+  
+  // Convert SJIS input path to UTF-8 for SMB2
+  utf8_path = sjis_to_utf8(sjis_path);
+  
+  if (utf8_path == NULL) {
+    // Conversion failed, use original path as fallback
+    return resolve_path(sjis_path);
+  }
+  
+  if (utf8_path[0] == '/') {
+    // Absolute path
+    strcpy(resolved, utf8_path);
+  } else {
+    // Relative path - append to current directory
+    strcpy(resolved, current_dir);
+    if (strcmp(current_dir, "/") != 0) {
+      strcat(resolved, "/");
+    }
+    strcat(resolved, utf8_path);
+  }
+  
+  free(utf8_path);
+  normalize_path(resolved);
+  return resolved;
+}
+
 static void cmd_cd(struct smb2_context *smb2, const char *path)
 {
   char *resolved_path;
@@ -164,7 +246,7 @@ static void cmd_cd(struct smb2_context *smb2, const char *path)
     return;
   }
   
-  resolved_path = resolve_path(path);
+  resolved_path = resolve_path_utf8(path);
   
   // Test if the directory exists by trying to open it
   dir = smb2_opendir(smb2, resolved_path);
@@ -196,7 +278,7 @@ static void cmd_mkdir(struct smb2_context *smb2, const char *path)
     return;
   }
   
-  target_path = resolve_path(path);
+  target_path = resolve_path_utf8(path);
   
   if (smb2_mkdir(smb2, target_path) != 0) {
     printf("Failed to create directory '%s': %s\n", target_path, smb2_get_error(smb2));
@@ -215,7 +297,7 @@ static void cmd_rmdir(struct smb2_context *smb2, const char *path)
     return;
   }
   
-  target_path = resolve_path(path);
+  target_path = resolve_path_utf8(path);
   
   if (smb2_rmdir(smb2, target_path) != 0) {
     printf("Failed to remove directory '%s': %s\n", target_path, smb2_get_error(smb2));
@@ -234,7 +316,7 @@ static void cmd_rm(struct smb2_context *smb2, const char *path)
     return;
   }
   
-  target_path = resolve_path(path);
+  target_path = resolve_path_utf8(path);
   
   if (smb2_unlink(smb2, target_path) != 0) {
     printf("Failed to remove file '%s': %s\n", target_path, smb2_get_error(smb2));
@@ -289,7 +371,7 @@ static void cmd_stat(struct smb2_context *smb2, const char *path)
     return;
   }
   
-  target_path = resolve_path(path);
+  target_path = resolve_path_utf8(path);
   
   if (smb2_stat(smb2, target_path, &st) != 0) {
     printf("Failed to stat '%s': %s\n", target_path, smb2_get_error(smb2));
@@ -333,7 +415,7 @@ static void cmd_statvfs(struct smb2_context *smb2, const char *path)
     // No path specified, use current directory
     target_path = current_dir;
   } else {
-    target_path = resolve_path(path);
+    target_path = resolve_path_utf8(path);
   }
   
   if (smb2_statvfs(smb2, target_path, &statvfs) != 0) {
@@ -415,7 +497,7 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
     return;
   }
   
-  target_remote = resolve_path(remote_path);
+  target_remote = resolve_path_utf8(remote_path);
   
   if (local_path == NULL || strlen(local_path) == 0) {
     // Extract filename from remote path
@@ -425,7 +507,10 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
     } else {
       filename = target_remote;
     }
-    snprintf(local_full_path, sizeof(local_full_path), "%s/%s", local_dir, filename);
+    // Convert filename from UTF-8 to SJIS for local filesystem
+    char *sjis_filename = utf8_to_sjis(filename);
+    snprintf(local_full_path, sizeof(local_full_path), "%s/%s", local_dir, sjis_filename ? sjis_filename : filename);
+    if (sjis_filename) free(sjis_filename);
     target_local = local_full_path;
   } else {
     if (local_path[0] == '/') {
@@ -444,7 +529,10 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
     } else {
       filename = target_remote;
     }
-    snprintf(local_full_path, sizeof(local_full_path), "%s/%s", target_local, filename);
+    // Convert filename from UTF-8 to SJIS for local filesystem
+    char *sjis_filename = utf8_to_sjis(filename);
+    snprintf(local_full_path, sizeof(local_full_path), "%s/%s", target_local, sjis_filename ? sjis_filename : filename);
+    if (sjis_filename) free(sjis_filename);
     target_local = local_full_path;
   }
   
@@ -516,11 +604,14 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
     } else {
       filename = target_local;
     }
+    // Convert filename from SJIS to UTF-8 for SMB2
+    char *utf8_filename = sjis_to_utf8(filename);
     snprintf(remote_full_path, sizeof(remote_full_path), "%s/%s", 
-             strcmp(current_dir, "/") == 0 ? "" : current_dir, filename);
+             strcmp(current_dir, "/") == 0 ? "" : current_dir, utf8_filename ? utf8_filename : filename);
+    if (utf8_filename) free(utf8_filename);
     target_remote = remote_full_path;
   } else {
-    target_remote = resolve_path(remote_path);
+    target_remote = resolve_path_utf8(remote_path);
   }
   
   // Check if remote path is a directory
@@ -532,7 +623,10 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
     } else {
       filename = target_local;
     }
-    snprintf(remote_full_path, sizeof(remote_full_path), "%s/%s", target_remote, filename);
+    // Convert filename from SJIS to UTF-8 for SMB2
+    char *utf8_filename = sjis_to_utf8(filename);
+    snprintf(remote_full_path, sizeof(remote_full_path), "%s/%s", target_remote, utf8_filename ? utf8_filename : filename);
+    if (utf8_filename) free(utf8_filename);
     target_remote = remote_full_path;
   }
   
@@ -583,7 +677,7 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
     // No argument - list current directory
     target_path = current_dir;
   } else {
-    target_path = resolve_path(path);
+    target_path = resolve_path_utf8(path);
   }
 
   dir = smb2_opendir(smb2, target_path);
@@ -597,6 +691,8 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
   printf("%-30s %-10s %15s\n", "----", "----", "----");
 
   while ((ent = smb2_readdir(smb2, dir))) {
+    char *sjis_name;
+    
     switch (ent->st.smb2_type) {
     case SMB2_TYPE_LINK:
       type = "LINK";
@@ -611,7 +707,11 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
       type = "UNKNOWN";
       break;
     }
-    printf("%-30s %-10s %15llu\n", ent->name, type, (unsigned long long)ent->st.smb2_size);
+    
+    // Convert filename from UTF-8 to SJIS for display
+    sjis_name = utf8_to_sjis(ent->name);
+    printf("%-30s %-10s %15llu\n", sjis_name ? sjis_name : ent->name, type, (unsigned long long)ent->st.smb2_size);
+    if (sjis_name) free(sjis_name);
   }
 
   smb2_closedir(smb2, dir);
