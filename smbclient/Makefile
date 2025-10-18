@@ -36,7 +36,7 @@ ASFLAGS = -I. -MMD -MP
 
 INC += -I. -I../include -I../iconv/
 INC += -I../libsmb2/include -I../libsmb2/include/smb2
-LIBS += -lsocket
+LIBS += -lsocket -lpthread
 DEFS +=
 
 ifneq ($(DEBUG),)

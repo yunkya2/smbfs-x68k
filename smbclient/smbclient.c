@@ -35,6 +35,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <pthread.h>
 #include <x68k/dos.h>
 #include <x68k/iocs.h>
 
@@ -44,14 +46,25 @@
 #include "iconv_mini.h"
 
 //****************************************************************************
-// Global variables
+// Macros and definitions
 //****************************************************************************
 
 #define PATH_LEN 1024
 
+//****************************************************************************
+// Global variables
+//****************************************************************************
+
+//****************************************************************************
+// Local variables
+//****************************************************************************
+
 static char current_dir[PATH_LEN] = "/";
 static char local_dir[PATH_LEN] = ".";
-static int is_finished = 0;
+static int is_finished = false;
+
+static pthread_t keepalive_thread;
+static pthread_mutex_t keepalive_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 //****************************************************************************
 // Utility routine
@@ -267,9 +280,10 @@ static const char *format_uint64(uint64_t value)
   if (value >= 1000000000ULL) {
     sprintf(p, "%lu", (unsigned long)(value / 1000000000ULL));
     p += strlen(buf);
-    value %= 1000000000ULL;
+    sprintf(p, "%09lu", (unsigned long)(value % 1000000000ULL));
+  } else {
+    sprintf(p, "%lu", (unsigned long)value);
   }
-  sprintf(p, "%lu", (unsigned long)value);
   return buf;
 }
 
@@ -298,8 +312,8 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
   }
 
   printf("Directory listing for '%s':\n", target_path);
-  printf("  %-30s %-8s %8s %s\n", "Name", "Type", "Size", "Time");
-  printf("  %-30s %-8s %8s %s\n", "----", "----", "----", "----");
+  printf("  %-30s %-8s %10s %s\n", "Name", "Type", "Size", "Time");
+  printf("  %-30s %-8s %10s %s\n", "----", "----", "----", "----");
 
   while ((ent = smb2_readdir(smb2, dir))) {
     char *sjis_name;
@@ -321,7 +335,7 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
     
     // Convert filename from UTF-8 to SJIS for display
     sjis_name = utf8_to_sjis(ent->name);
-    printf("  %-30s %-8s %8lu %s\n",
+    printf("  %-30s %-8s %10lu %s\n",
            sjis_name ? sjis_name : ent->name,
            type,
            (unsigned long)ent->st.smb2_size,
@@ -852,7 +866,7 @@ static void share_enum_cb(struct smb2_context *smb2, int status,
   if (status) {
     printf("Failed to enumerate shares (%s) %s\n",
            strerror(-status), smb2_get_error(smb2));
-    is_finished = 1;
+    is_finished = true;
     return;
   }
 
@@ -890,7 +904,7 @@ static void share_enum_cb(struct smb2_context *smb2, int status,
   }
 
   smb2_free_data(smb2, rep);
-  is_finished = 1;
+  is_finished = true;
 }
 
 #define POLLIN      0x0001
@@ -929,6 +943,24 @@ static int list_shares(struct smb2_context *smb2, const char *server, const char
 
   smb2_disconnect_share(smb2);
   return ret;
+}
+
+//****************************************************************************
+// Keepalive thread
+//****************************************************************************
+
+__attribute__((noreturn))
+static void* keepalive_thread_func(void *arg)
+{
+  struct smb2_context *smb2 = (struct smb2_context *)arg;
+
+  pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+  while (1) {
+    sleep(30);
+    pthread_mutex_lock(&keepalive_mutex);
+    smb2_echo(smb2);
+    pthread_mutex_unlock(&keepalive_mutex);
+  }
 }
 
 //****************************************************************************
@@ -1043,6 +1075,14 @@ int main(int argc, char *argv[])
     }
   }
 
+  // Check whether TCP/IP is available
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    fprintf(stderr, "TCP/IP socket creation failed\n");
+    exit(1);
+  }
+  close(fd);
+
   smb2 = smb2_init_context();
   if (smb2 == NULL) {
     fprintf(stderr, "Failed to init context\n");
@@ -1053,7 +1093,7 @@ int main(int argc, char *argv[])
 
   // Debug: show URL conversion if input was modified
   if (strcmp(normalized_url, argv[url_index]) != 0) {
-    printf("URL normalized: '%s' -> '%s'\n", argv[url_index], normalized_url);
+//    printf("URL normalized: '%s' -> '%s'\n", argv[url_index], normalized_url);
   }
 
   url = smb2_parse_url(smb2, normalized_url);
@@ -1070,13 +1110,12 @@ int main(int argc, char *argv[])
     exit(result);
   }
 
-
-
   smb2_set_security_mode(smb2, SMB2_NEGOTIATE_SIGNING_ENABLED);
   if (smb2_connect_share(smb2, url->server, url->share, url->user) != 0) {
     printf("smb2_connect_share failed. %s\n", smb2_get_error(smb2));
     exit(1);
   }
+  smb2_destroy_url(url);
 
   if (command_mode) {
     // Execute the specified command(s) and exit
@@ -1084,12 +1123,24 @@ int main(int argc, char *argv[])
   } else {
     // Interactive mode
     char cmdline[256];
-    
+
+    pthread_mutex_lock(&keepalive_mutex);
+    if (pthread_create(&keepalive_thread, NULL, keepalive_thread_func, smb2) != 0) {
+      printf("Failed to create keepalive thread\n");
+      smb2_disconnect_share(smb2);
+      smb2_destroy_context(smb2);
+      exit(1);
+    }
+
     printf("SMB Client - Type 'help' for commands, 'quit' to exit\n");
     
     while (1) {
       printf("smb:%s> ", current_dir);
-      if (fgets(cmdline, sizeof(cmdline), stdin) == NULL) {
+
+      pthread_mutex_unlock(&keepalive_mutex);
+      char *res = fgets(cmdline, sizeof(cmdline), stdin);
+      pthread_mutex_lock(&keepalive_mutex);
+      if (res == NULL) {
         break;
       }
 
@@ -1101,7 +1152,9 @@ int main(int argc, char *argv[])
     }
   }
 
-  smb2_destroy_url(url);
+  pthread_cancel(keepalive_thread);
+  pthread_join(keepalive_thread, NULL);
+  smb2_disconnect_share(smb2);
   smb2_destroy_context(smb2);
   return 0;
 }
