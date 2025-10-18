@@ -571,7 +571,7 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
   
   if (local_path == NULL || strlen(local_path) == 0) {
     // Extract filename from remote path
-    const char *local_path = strrchr(target_remote, '/');
+    local_path = strrchr(target_remote, '/');
     if (local_path) {
       local_path++; // Skip the '/'
     } else {
@@ -600,7 +600,7 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
     strncat(local_full_path, filename, sizeof(local_full_path) - strlen(local_full_path) - 1);
     target_local = local_full_path;
   }
-  
+
   // Open remote file for reading
   fh = smb2_open(smb2, sjis_to_utf8(target_remote + 1), O_RDONLY);
   if (fh == NULL) {
@@ -741,6 +741,7 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
   // Parse command and argument
   cmd = strtok(cmdline, " \t");
   arg = strtok(NULL, "");  // Get rest of line as argument
+  arg = trim_spaces(arg);
   
   if (cmd == NULL) {
     return 0;
@@ -764,28 +765,20 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
     printf("  quit/exit     - Exit the program\n");
     printf("  help          - Show this help\n");
   } else if (strcmp(cmd, "ls") == 0) {
-    arg = trim_spaces(arg);
     cmd_ls(smb2, arg);  // arg can be NULL for current directory
   } else if (strcmp(cmd, "cd") == 0 || strcmp(cmd, "chdir") == 0) {
-    arg = trim_spaces(arg);
     cmd_cd(smb2, arg);  // arg can be NULL to show current directory
   } else if (strcmp(cmd, "mkdir") == 0) {
-    arg = trim_spaces(arg);
     cmd_mkdir(smb2, arg);
   } else if (strcmp(cmd, "rmdir") == 0) {
-    arg = trim_spaces(arg);
     cmd_rmdir(smb2, arg);
   } else if (strcmp(cmd, "rm") == 0) {
-    arg = trim_spaces(arg);
     cmd_rm(smb2, arg);
   } else if (strcmp(cmd, "stat") == 0) {
-    arg = trim_spaces(arg);
     cmd_stat(smb2, arg);
   } else if (strcmp(cmd, "statvfs") == 0) {
-    arg = trim_spaces(arg);
     cmd_statvfs(smb2, arg);  // arg can be NULL for current directory
   } else if (strcmp(cmd, "lcd") == 0) {
-    arg = trim_spaces(arg);
     cmd_lcd(arg);  // arg can be NULL to show current local directory
   } else if (strcmp(cmd, "get") == 0) {
     char *remote_arg = NULL, *local_arg = NULL;
@@ -939,12 +932,12 @@ static int list_shares(struct smb2_context *smb2, const char *server, const char
 }
 
 //****************************************************************************
-// Program entry point
+// Main program
 //****************************************************************************
 
 static char* normalize_smb_url(const char *input_url)
 {
-  static char normalized_url[2048];
+  static char normalized_url[PATH_LEN];
   const char *url = input_url;
 
   // Skip leading whitespace
