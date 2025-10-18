@@ -60,7 +60,6 @@
 //****************************************************************************
 
 static char current_dir[PATH_LEN] = "/";
-static char local_dir[PATH_LEN] = ".";
 static int is_finished = false;
 
 static pthread_t keepalive_thread;
@@ -530,37 +529,10 @@ static void cmd_statvfs(struct smb2_context *smb2, const char *path)
 
 static void cmd_lcd(const char *path)
 {
-  if (path == NULL || strlen(path) == 0) {
-    // No argument - show current local directory
-    printf("Local directory: %s\n", local_dir);
-    return;
-  }
-  
-  if (chdir(path) != 0) {
+  if (chdir(path ? path : "") != 0) {
     printf("Failed to change local directory to '%s': %s\n", path, strerror(errno));
     return;
   }
-  
-  // Update local directory (simple path tracking)
-  if (path[0] == '/') {
-    strcpy(local_dir, path);
-  } else if (strcmp(path, "..") == 0) {
-    char *last_slash = strrchr(local_dir, '/');
-    if (last_slash && last_slash != local_dir) {
-      *last_slash = '\0';
-    } else if (strcmp(local_dir, ".") != 0) {
-      strcpy(local_dir, ".");
-    }
-  } else if (strcmp(path, ".") != 0) {
-    if (strcmp(local_dir, ".") == 0) {
-      strcpy(local_dir, path);
-    } else {
-      strcat(local_dir, "/");
-      strcat(local_dir, path);
-    }
-  }
-  
-  printf("Changed local directory to: %s\n", local_dir);
 }
 
 //----------------------------------------------------------------------------
@@ -592,15 +564,8 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
       local_path = target_remote;
     }
   }
-  if (local_path[0] == '/') {
-    target_local = local_path;
-  } else {
-    strcpy(local_full_path, local_dir);
-    strncat(local_full_path, "/", sizeof(local_full_path) - strlen(local_full_path) - 1);
-    strncat(local_full_path, local_path, sizeof(local_full_path) - strlen(local_full_path) - 1);
-    target_local = local_full_path;
-  }
-  
+  target_local = local_path;
+
   // Check if local path is a directory
   if (stat(target_local, &st) == 0 && S_ISDIR(st.st_mode)) {
     const char *filename = strrchr(target_remote, '/');
@@ -658,7 +623,6 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
   struct smb2fh *fh;
   const char *target_local;
   char *target_remote;
-  char local_full_path[PATH_LEN];
   char remote_full_path[PATH_LEN];
   int local_fd;
   uint8_t buffer[8192];
@@ -670,18 +634,10 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
     return;
   }
   
-  if (local_path[0] == '/') {
-    target_local = local_path;
-  } else {
-    strcpy(local_full_path, local_dir);
-    strncat(local_full_path, "/", sizeof(local_full_path) - strlen(local_full_path) - 1);
-    strncat(local_full_path, local_path, sizeof(local_full_path) - strlen(local_full_path) - 1);
-    target_local = local_full_path;
-  }
-  
+  target_local = local_path;
   if (remote_path == NULL || strlen(remote_path) == 0) {
     // Extract filename from local path
-    const char *remote_path = strrchr(target_local, '/');
+    remote_path = strrchr(target_local, '/');
     if (remote_path) {
       remote_path++; // Skip the '/'
     } else {
@@ -751,10 +707,16 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
   if (strlen(cmdline) == 0) {
     return 0;
   }
-  
+
   // Parse command and argument
-  cmd = strtok(cmdline, " \t");
-  arg = strtok(NULL, "");  // Get rest of line as argument
+  if (cmdline[0] == '!') {
+    // Shell command
+    cmd = "shell";
+    arg = cmdline + 1;
+  } else {
+    cmd = strtok(cmdline, " \t");
+    arg = strtok(NULL, "");  // Get rest of line as argument
+  }
   arg = trim_spaces(arg);
   
   if (cmd == NULL) {
@@ -776,17 +738,18 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
     printf("  get <remote> [local] - Download file from server\n");
     printf("  put <local> [remote] - Upload file to server\n");
     printf("  lcd [path]    - Change local directory\n");
+    printf("  shell [command] - Execute shell command\n");
     printf("  quit/exit     - Exit the program\n");
     printf("  help          - Show this help\n");
-  } else if (strcmp(cmd, "ls") == 0) {
+  } else if (strcmp(cmd, "ls") == 0 || strcmp(cmd, "dir") == 0 || strcmp(cmd, "l") == 0) {
     cmd_ls(smb2, arg);  // arg can be NULL for current directory
   } else if (strcmp(cmd, "cd") == 0 || strcmp(cmd, "chdir") == 0) {
     cmd_cd(smb2, arg);  // arg can be NULL to show current directory
-  } else if (strcmp(cmd, "mkdir") == 0) {
+  } else if (strcmp(cmd, "mkdir") == 0 || strcmp(cmd, "md") == 0) {
     cmd_mkdir(smb2, arg);
-  } else if (strcmp(cmd, "rmdir") == 0) {
+  } else if (strcmp(cmd, "rmdir") == 0 || strcmp(cmd, "rd") == 0) {
     cmd_rmdir(smb2, arg);
-  } else if (strcmp(cmd, "rm") == 0) {
+  } else if (strcmp(cmd, "rm") == 0 || strcmp(cmd, "del") == 0) {
     cmd_rm(smb2, arg);
   } else if (strcmp(cmd, "stat") == 0) {
     cmd_stat(smb2, arg);
@@ -810,6 +773,8 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
     } else {
       cmd_put(smb2, local_arg, remote_arg);
     }
+  } else if (strcmp(cmd, "shell") == 0) {
+    system(arg ? arg : "");
   } else {
     printf("Unknown command: %s\n", cmd);
     printf("Type 'help' for available commands\n");
@@ -1015,10 +980,7 @@ static void usage(void)
   fprintf(stderr, "smbclient -L <smb2-url>               - List available services\n");
   fprintf(stderr, "smbclient <smb2-url> -c \"<commands>\"   - Execute commands\n\n");
   fprintf(stderr, "URL format: \n");
-  fprintf(stderr, "  smb://[<domain;][<username>@]<host>>[:<port>][/<share>/<path>]\n");
-  fprintf(stderr, "  //[<username>@]<host>[:<port>]/<share>/<path>\n");
-  fprintf(stderr, "  [<username>@]<host>[:<port>]/<share>/<path>\n");
-  fprintf(stderr, "  <host>\n");
+  fprintf(stderr, "  [smb://][<domain;][<username>@]<host>[:<port>][/<share>/<path>]\n");
   fprintf(stderr, "\nCommands can be separated by semicolons (;)\n");
   fprintf(stderr, "Examples:\n");
   fprintf(stderr, "  smbclient server/share\n");
