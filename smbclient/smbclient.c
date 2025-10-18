@@ -41,15 +41,16 @@
 #include <smb2.h>
 #include <libsmb2.h>
 #include <libsmb2-raw.h>
-#include <libsmb2-dcerpc-srvsvc.h>
 #include "iconv_mini.h"
 
 //****************************************************************************
 // Global variables
 //****************************************************************************
 
-static char current_dir[1024] = "/";
-static char local_dir[1024] = ".";
+#define PATH_LEN 1024
+
+static char current_dir[PATH_LEN] = "/";
+static char local_dir[PATH_LEN] = ".";
 static int is_finished = 0;
 
 //****************************************************************************
@@ -79,57 +80,6 @@ static char* trim_spaces(char *arg)
   while (end > arg && (*end == ' ' || *end == '\t')) *end-- = '\0';
   
   return arg;
-}
-
-// Character encoding conversion helpers
-static char* sjis_to_utf8(const char *sjis_str)
-{
-  if (sjis_str == NULL) return NULL;
-  
-  size_t in_len = strlen(sjis_str);
-  size_t out_len = in_len * 3 + 1; // UTF-8 can be up to 3 bytes per SJIS character
-  char *utf8_str = malloc(out_len);
-  if (utf8_str == NULL) return NULL;
-  
-  char *src_buf = (char *)sjis_str;  // Cast away const for iconv API
-  char *dst_buf = utf8_str;
-  size_t src_len = in_len;
-  size_t dst_len = out_len - 1; // Reserve space for null terminator
-  
-  if (iconv_s2u(&src_buf, &src_len, &dst_buf, &dst_len) < 0) {
-    free(utf8_str);
-    return NULL;
-  }
-  
-  // Add null terminator
-  *dst_buf = '\0';
-  
-  return utf8_str;
-}
-
-static char* utf8_to_sjis(const char *utf8_str)
-{
-  if (utf8_str == NULL) return NULL;
-  
-  size_t in_len = strlen(utf8_str);
-  size_t out_len = in_len * 2 + 1; // SJIS can be up to 2 bytes per UTF-8 character
-  char *sjis_str = malloc(out_len);
-  if (sjis_str == NULL) return NULL;
-  
-  char *src_buf = (char *)utf8_str;  // Cast away const for iconv API
-  char *dst_buf = sjis_str;
-  size_t src_len = in_len;
-  size_t dst_len = out_len - 1; // Reserve space for null terminator
-  
-  if (iconv_u2s(&src_buf, &src_len, &dst_buf, &dst_len) < 0) {
-    free(sjis_str);
-    return NULL;
-  }
-  
-  // Add null terminator
-  *dst_buf = '\0';
-  
-  return sjis_str;
 }
 
 static int parse_two_args(char *arg_str, char **arg1, char **arg2)
@@ -167,68 +117,95 @@ static int parse_two_args(char *arg_str, char **arg1, char **arg2)
   return 1;
 }
 
+//----------------------------------------------------------------------------
+
+// SJIS -> UTF-8 conversion
+static char* sjis_to_utf8(const char *sjis_str)
+{
+  static char buffer[PATH_LEN];
+
+  if (sjis_str == NULL) return NULL;
+
+  char *src_buf = (char *)sjis_str;  // Cast away const for iconv API
+  size_t src_len = strlen(sjis_str);
+  char *dst_buf = buffer;
+  size_t dst_len = sizeof(buffer) - 1; // Reserve space for null terminator
+
+  if (iconv_s2u(&src_buf, &src_len, &dst_buf, &dst_len) < 0) {
+    return NULL;
+  }
+  
+  // Add null terminator
+  *dst_buf = '\0';
+  
+  return buffer;
+}
+
+// UTF-8 -> SJIS conversion
+static char* utf8_to_sjis(const char *utf8_str)
+{
+  static char buffer[PATH_LEN];
+
+  if (utf8_str == NULL) return NULL;
+
+  char *src_buf = (char *)utf8_str;  // Cast away const for iconv API
+  size_t src_len = strlen(utf8_str);
+  char *dst_buf = buffer;
+  size_t dst_len = sizeof(buffer) - 1; // Reserve space for null terminator
+  
+  if (iconv_u2s(&src_buf, &src_len, &dst_buf, &dst_len) < 0) {
+    return NULL;
+  }
+  
+  // Add null terminator
+  *dst_buf = '\0';
+
+  return buffer;
+}
+
+//----------------------------------------------------------------------------
+
+// Path normalization
 static void normalize_path(char *path)
 {
-  char result[1024];
-  char *segments[256];  // Array to store path segments
-  int segment_count = 0;
-  char *token;
-  char *path_copy;
-  int i;
-  
-  // Ensure path starts with '/'
-  if (path[0] != '/') {
-    memmove(path + 1, path, strlen(path) + 1);
-    path[0] = '/';
+  char *p = path;
+  if (*p == '/') {
+    p++; // Skip leading slash for processing
   }
-  
-  // Make a copy for tokenization
-  path_copy = strdup(path);
-  if (path_copy == NULL) {
-    return;  // Memory allocation failed, keep original path
-  }
-  
-  // Split path into segments
-  token = strtok(path_copy, "/");
-  while (token != NULL && segment_count < 256) {
-    if (strcmp(token, ".") == 0) {
+  char *q = p;
+  char *r = q;
+  while (*p != '\0') {
+    while (*p == '/') {
+      p++;  // Skip multiple slashes
+    }
+    if (p[0] == '.' && (p[1] == '/' || p[1] == '\0')) {
       // Current directory - skip
-    } else if (strcmp(token, "..") == 0) {
+      p += 1 + (p[1] == '/' ? 1 : 0);
+    } else if (p[0] == '.' && p[1] == '.' && (p[2] == '/' || p[2] == '\0')) {
       // Parent directory - remove last segment if exists
-      if (segment_count > 0) {
-        segment_count--;
+      while (q > r && --q > r && *(q - 1) != '/') {
+        // Move q back to previous slash
       }
-    } else if (strlen(token) > 0) {
-      // Regular segment - add to array
-      segments[segment_count] = strdup(token);
-      if (segments[segment_count] != NULL) {
-        segment_count++;
+      p += 2 + (p[2] == '/' ? 1 : 0);
+    } else {
+      // Regular segment
+      char *next_slash = strchr(p, '/');
+      if (next_slash) {
+        memcpy(q, p, next_slash - p + 1);
+        q += next_slash - p + 1;
+        p = next_slash + 1;
+      } else {
+        strcpy(q, p);
+        return;
       }
     }
-    token = strtok(NULL, "/");
   }
-  
-  // Reconstruct normalized path
-  if (segment_count == 0) {
-    strcpy(result, "/");
-  } else {
-    strcpy(result, "");
-    for (i = 0; i < segment_count; i++) {
-      strcat(result, "/");
-      strcat(result, segments[i]);
-      free(segments[i]);  // Free the duplicated segment
-    }
-  }
-  
-  // Copy result back to original path
-  strcpy(path, result);
-  
-  free(path_copy);
+  *q = '\0';  // Null terminate the result
 }
 
 static char* resolve_path(const char *path)
 {
-  static char resolved[1024];
+  static char resolved[PATH_LEN];
   
   if (path[0] == '/') {
     // Absolute path
@@ -236,45 +213,15 @@ static char* resolve_path(const char *path)
   } else {
     // Relative path - append to current directory
     strcpy(resolved, current_dir);
-    if (strcmp(current_dir, "/") != 0) {
-      strcat(resolved, "/");
-    }
-    strcat(resolved, path);
+    strncat(resolved, "/", PATH_LEN - strlen(resolved) - 1);
+    strncat(resolved, path, PATH_LEN - strlen(resolved) - 1);
   }
   
   normalize_path(resolved);
-  return resolved + 1;
+  return resolved;
 }
 
-static char* resolve_path_utf8(const char *sjis_path)
-{
-  static char resolved[1024];
-  char *utf8_path;
-  
-  // Convert SJIS input path to UTF-8 for SMB2
-  utf8_path = sjis_to_utf8(sjis_path);
-  
-  if (utf8_path == NULL) {
-    // Conversion failed, use original path as fallback
-    return resolve_path(sjis_path);
-  }
-  
-  if (utf8_path[0] == '/') {
-    // Absolute path
-    strcpy(resolved, utf8_path);
-  } else {
-    // Relative path - append to current directory
-    strcpy(resolved, current_dir);
-    if (strcmp(current_dir, "/") != 0) {
-      strcat(resolved, "/");
-    }
-    strcat(resolved, utf8_path);
-  }
-  
-  free(utf8_path);
-  normalize_path(resolved);
-  return resolved + 1;
-}
+//----------------------------------------------------------------------------
 
 static const char *format_time(uint64_t timestamp)
 {
@@ -339,12 +286,12 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
   
   if (path == NULL || strlen(path) == 0) {
     // No argument - list current directory
-    target_path = current_dir + 1;
+    target_path = current_dir;
   } else {
-    target_path = resolve_path_utf8(path);
+    target_path = resolve_path(path);
   }
 
-  dir = smb2_opendir(smb2, target_path);
+  dir = smb2_opendir(smb2, sjis_to_utf8(target_path + 1));
   if (dir == NULL) {
     printf("Failed to open directory '%s': %s\n", target_path, smb2_get_error(smb2));
     return;
@@ -379,7 +326,6 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
            type,
            (unsigned long)ent->st.smb2_size,
            format_time(ent->st.smb2_mtime));
-    if (sjis_name) free(sjis_name);
   }
 
   smb2_closedir(smb2, dir);
@@ -398,10 +344,10 @@ static void cmd_cd(struct smb2_context *smb2, const char *path)
     return;
   }
   
-  resolved_path = resolve_path_utf8(path);
+  resolved_path = resolve_path(path);
   
   // Test if the directory exists by trying to open it
-  dir = smb2_opendir(smb2, resolved_path);
+  dir = smb2_opendir(smb2, sjis_to_utf8(resolved_path + 1));
   if (dir == NULL) {
     printf("Failed to change directory to '%s': %s\n", resolved_path, smb2_get_error(smb2));
     return;
@@ -410,7 +356,7 @@ static void cmd_cd(struct smb2_context *smb2, const char *path)
   smb2_closedir(smb2, dir);
   
   // Update current directory
-  strcpy(current_dir, resolved_path - 1);
+  strcpy(current_dir, resolved_path);
   
   // Remove trailing slash if not root
   int len = strlen(current_dir);
@@ -432,9 +378,9 @@ static void cmd_mkdir(struct smb2_context *smb2, const char *path)
     return;
   }
   
-  target_path = resolve_path_utf8(path);
+  target_path = resolve_path(path);
   
-  if (smb2_mkdir(smb2, target_path) != 0) {
+  if (smb2_mkdir(smb2, sjis_to_utf8(target_path + 1)) != 0) {
     printf("Failed to create directory '%s': %s\n", target_path, smb2_get_error(smb2));
     return;
   }
@@ -453,9 +399,9 @@ static void cmd_rmdir(struct smb2_context *smb2, const char *path)
     return;
   }
   
-  target_path = resolve_path_utf8(path);
+  target_path = resolve_path(path);
   
-  if (smb2_rmdir(smb2, target_path) != 0) {
+  if (smb2_rmdir(smb2, sjis_to_utf8(target_path + 1)) != 0) {
     printf("Failed to remove directory '%s': %s\n", target_path, smb2_get_error(smb2));
     return;
   }
@@ -474,9 +420,9 @@ static void cmd_rm(struct smb2_context *smb2, const char *path)
     return;
   }
   
-  target_path = resolve_path_utf8(path);
+  target_path = resolve_path(path);
   
-  if (smb2_unlink(smb2, target_path) != 0) {
+  if (smb2_unlink(smb2, sjis_to_utf8(target_path + 1)) != 0) {
     printf("Failed to remove file '%s': %s\n", target_path, smb2_get_error(smb2));
     return;
   }
@@ -496,10 +442,10 @@ static void cmd_stat(struct smb2_context *smb2, const char *path)
     printf("Usage: stat <path>\n");
     return;
   }
-  
-  target_path = resolve_path_utf8(path);
-  
-  if (smb2_stat(smb2, target_path, &st) != 0) {
+
+  target_path = resolve_path(path);
+
+  if (smb2_stat(smb2, sjis_to_utf8(target_path + 1), &st) != 0) {
     printf("Failed to stat '%s': %s\n", target_path, smb2_get_error(smb2));
     return;
   }
@@ -541,12 +487,12 @@ static void cmd_statvfs(struct smb2_context *smb2, const char *path)
   
   if (path == NULL || strlen(path) == 0) {
     // No path specified, use current directory
-    target_path = current_dir + 1;
+    target_path = current_dir;
   } else {
-    target_path = resolve_path_utf8(path);
+    target_path = resolve_path(path);
   }
-  
-  if (smb2_statvfs(smb2, target_path, &statvfs) != 0) {
+
+  if (smb2_statvfs(smb2, sjis_to_utf8(target_path + 1), &statvfs) != 0) {
     printf("Failed to get filesystem statistics for '%s': %s\n", target_path, smb2_get_error(smb2));
     return;
   }
@@ -610,7 +556,7 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
   struct smb2fh *fh;
   char *target_remote;
   const char *target_local;
-  char local_full_path[1024];
+  char local_full_path[PATH_LEN];
   int local_fd;
   uint8_t buffer[8192];
   int bytes_read, bytes_written;
@@ -621,28 +567,24 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
     return;
   }
   
-  target_remote = resolve_path_utf8(remote_path);
+  target_remote = resolve_path(remote_path);
   
   if (local_path == NULL || strlen(local_path) == 0) {
     // Extract filename from remote path
-    const char *filename = strrchr(target_remote, '/');
-    if (filename) {
-      filename++; // Skip the '/'
+    const char *local_path = strrchr(target_remote, '/');
+    if (local_path) {
+      local_path++; // Skip the '/'
     } else {
-      filename = target_remote;
+      local_path = target_remote;
     }
-    // Convert filename from UTF-8 to SJIS for local filesystem
-    char *sjis_filename = utf8_to_sjis(filename);
-    snprintf(local_full_path, sizeof(local_full_path), "%s/%s", local_dir, sjis_filename ? sjis_filename : filename);
-    if (sjis_filename) free(sjis_filename);
-    target_local = local_full_path;
+  }
+  if (local_path[0] == '/') {
+    target_local = local_path;
   } else {
-    if (local_path[0] == '/') {
-      target_local = local_path;
-    } else {
-      snprintf(local_full_path, sizeof(local_full_path), "%s/%s", local_dir, local_path);
-      target_local = local_full_path;
-    }
+    strcpy(local_full_path, local_dir);
+    strncat(local_full_path, "/", sizeof(local_full_path) - strlen(local_full_path) - 1);
+    strncat(local_full_path, local_path, sizeof(local_full_path) - strlen(local_full_path) - 1);
+    target_local = local_full_path;
   }
   
   // Check if local path is a directory
@@ -653,15 +595,14 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
     } else {
       filename = target_remote;
     }
-    // Convert filename from UTF-8 to SJIS for local filesystem
-    char *sjis_filename = utf8_to_sjis(filename);
-    snprintf(local_full_path, sizeof(local_full_path), "%s/%s", target_local, sjis_filename ? sjis_filename : filename);
-    if (sjis_filename) free(sjis_filename);
+    strcpy(local_full_path, target_local);
+    strncat(local_full_path, "/", sizeof(local_full_path) - strlen(local_full_path) - 1);
+    strncat(local_full_path, filename, sizeof(local_full_path) - strlen(local_full_path) - 1);
     target_local = local_full_path;
   }
   
   // Open remote file for reading
-  fh = smb2_open(smb2, target_remote, O_RDONLY);
+  fh = smb2_open(smb2, sjis_to_utf8(target_remote + 1), O_RDONLY);
   if (fh == NULL) {
     printf("Failed to open remote file '%s': %s\n", target_remote, smb2_get_error(smb2));
     return;
@@ -703,8 +644,8 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
   struct smb2fh *fh;
   const char *target_local;
   char *target_remote;
-  char local_full_path[1024];
-  char remote_full_path[1024];
+  char local_full_path[PATH_LEN];
+  char remote_full_path[PATH_LEN];
   int local_fd;
   uint8_t buffer[8192];
   int bytes_read, bytes_written;
@@ -718,30 +659,25 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
   if (local_path[0] == '/') {
     target_local = local_path;
   } else {
-    snprintf(local_full_path, sizeof(local_full_path), "%s/%s", local_dir, local_path);
+    strcpy(local_full_path, local_dir);
+    strncat(local_full_path, "/", sizeof(local_full_path) - strlen(local_full_path) - 1);
+    strncat(local_full_path, local_path, sizeof(local_full_path) - strlen(local_full_path) - 1);
     target_local = local_full_path;
   }
   
   if (remote_path == NULL || strlen(remote_path) == 0) {
     // Extract filename from local path
-    const char *filename = strrchr(target_local, '/');
-    if (filename) {
-      filename++; // Skip the '/'
+    const char *remote_path = strrchr(target_local, '/');
+    if (remote_path) {
+      remote_path++; // Skip the '/'
     } else {
-      filename = target_local;
+      remote_path = target_local;
     }
-    // Convert filename from SJIS to UTF-8 for SMB2
-    char *utf8_filename = sjis_to_utf8(filename);
-    snprintf(remote_full_path, sizeof(remote_full_path), "%s/%s", 
-             strcmp(current_dir, "/") == 0 ? "" : current_dir, utf8_filename ? utf8_filename : filename);
-    if (utf8_filename) free(utf8_filename);
-    target_remote = remote_full_path + 1;
-  } else {
-    target_remote = resolve_path_utf8(remote_path);
   }
+  target_remote = resolve_path(remote_path);
   
   // Check if remote path is a directory
-  if (smb2_stat(smb2, target_remote, &remote_st) == 0 && 
+  if (smb2_stat(smb2, sjis_to_utf8(target_remote + 1), &remote_st) == 0 && 
       remote_st.smb2_type == SMB2_TYPE_DIRECTORY) {
     const char *filename = strrchr(target_local, '/');
     if (filename) {
@@ -749,10 +685,9 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
     } else {
       filename = target_local;
     }
-    // Convert filename from SJIS to UTF-8 for SMB2
-    char *utf8_filename = sjis_to_utf8(filename);
-    snprintf(remote_full_path, sizeof(remote_full_path), "%s/%s", target_remote, utf8_filename ? utf8_filename : filename);
-    if (utf8_filename) free(utf8_filename);
+    strcpy(remote_full_path, target_remote);
+    strncat(remote_full_path, "/", sizeof(remote_full_path) - strlen(remote_full_path) - 1);
+    strncat(remote_full_path, filename, sizeof(remote_full_path) - strlen(remote_full_path) - 1);
     target_remote = remote_full_path;
   }
   
@@ -764,7 +699,7 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
   }
   
   // Open remote file for writing
-  fh = smb2_open(smb2, target_remote, O_WRONLY | O_CREAT | O_TRUNC);
+  fh = smb2_open(smb2, sjis_to_utf8(target_remote + 1), O_WRONLY | O_CREAT | O_TRUNC);
   if (fh == NULL) {
     printf("Failed to create remote file '%s': %s\n", target_remote, smb2_get_error(smb2));
     close(local_fd);
@@ -1150,9 +1085,6 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
-  // Initialize local directory
-  strcpy(local_dir, ".");
-  
   if (command_mode) {
     // Execute the specified command(s) and exit
     execute_command_string(smb2, command_string);
