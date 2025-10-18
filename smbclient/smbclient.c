@@ -840,15 +840,78 @@ static int execute_command_string(struct smb2_context *smb2, const char *command
 // Dummy program entry
 //****************************************************************************
 
+static char* normalize_smb_url(const char *input_url)
+{
+  static char normalized_url[2048];
+  const char *url = input_url;
+  
+  // Skip leading whitespace
+  while (*url == ' ' || *url == '\t') url++;
+  
+  // If URL is empty after trimming, return error
+  if (*url == '\0') {
+    strcpy(normalized_url, "smb://");
+    return normalized_url;
+  }
+  
+  // If URL already starts with smb://, use as is
+  if (strncmp(url, "smb://", 6) == 0) {
+    strncpy(normalized_url, url, sizeof(normalized_url) - 1);
+    normalized_url[sizeof(normalized_url) - 1] = '\0';
+    return normalized_url;
+  }
+  
+  // If starts with //, add smb: prefix
+  if (strncmp(url, "//", 2) == 0) {
+    snprintf(normalized_url, sizeof(normalized_url), "smb:%s", url);
+    return normalized_url;
+  }
+  
+  // If starts with single /, it might be an absolute path, treat as server/share
+  if (url[0] == '/') {
+    snprintf(normalized_url, sizeof(normalized_url), "smb:/%s", url);
+    return normalized_url;
+  }
+  
+  // If it contains a colon (but not smb:), it might be a different protocol
+  // Still treat it as SMB for compatibility
+  if (strchr(url, ':') != NULL && strncmp(url, "smb:", 4) != 0) {
+    // If it contains ://, it's likely a full URL, just add smb scheme
+    if (strstr(url, "://") != NULL) {
+      snprintf(normalized_url, sizeof(normalized_url), "smb://%s", strchr(url, '/') + 3);
+      return normalized_url;
+    }
+  }
+  
+  // If it contains at least one slash, treat as server/share/path format
+  if (strchr(url, '/') != NULL) {
+    snprintf(normalized_url, sizeof(normalized_url), "smb://%s", url);
+    return normalized_url;
+  }
+  
+  // If it's just a server name (no slash), add smb:// prefix
+  // This handles cases like "server" or "192.168.1.100"
+  snprintf(normalized_url, sizeof(normalized_url), "smb://%s", url);
+  return normalized_url;
+}
+
 static void usage(void)
 {
   fprintf(stderr, "Usage:\n");
   fprintf(stderr, "smbclient <smb2-url>                  - Interactive mode\n");
   fprintf(stderr, "smbclient -L <smb2-url>               - List available services\n");
   fprintf(stderr, "smbclient <smb2-url> -c \"<commands>\"   - Execute commands\n\n");
-  fprintf(stderr, "URL format: smb://[<domain;][<username>@]<host>>[:<port>][/<share>/<path>]\n");
+  fprintf(stderr, "URL format: \n");
+  fprintf(stderr, "  smb://[<domain;][<username>@]<host>>[:<port>][/<share>/<path>]\n");
+  fprintf(stderr, "  //[<username>@]<host>[:<port>]/<share>/<path>\n");
+  fprintf(stderr, "  [<username>@]<host>[:<port>]/<share>/<path>\n");
+  fprintf(stderr, "  <host>\n");
   fprintf(stderr, "\nCommands can be separated by semicolons (;)\n");
-  fprintf(stderr, "Example: smbclient smb://server/share -c \"ls; cd dir; ls\"\n");
+  fprintf(stderr, "Examples:\n");
+  fprintf(stderr, "  smbclient server/share\n");
+  fprintf(stderr, "  smbclient //server/share\n");
+  fprintf(stderr, "  smbclient smb://server/share\n");
+  fprintf(stderr, "  smbclient server/share -c \"ls; cd dir; ls\"\n");
 }
 
 int main(int argc, char *argv[])
@@ -901,9 +964,14 @@ int main(int argc, char *argv[])
 
   // For list mode, handle URL parsing differently
   if (list_mode) {
-    char *server_url = argv[url_index];
+    char *server_url = normalize_smb_url(argv[url_index]);
     char *user = NULL;
     char *server = NULL;
+    
+    // Debug: show URL conversion if input was modified
+    if (strcmp(server_url, argv[url_index]) != 0) {
+      printf("URL normalized: '%s' -> '%s'\n", argv[url_index], server_url);
+    }
     
     // Parse the URL to extract server and user
     smb2 = smb2_init_context();
@@ -936,7 +1004,14 @@ int main(int argc, char *argv[])
     exit(0);
   }
 
-  url = smb2_parse_url(smb2, argv[url_index]);
+  char *normalized_url = normalize_smb_url(argv[url_index]);
+  
+  // Debug: show URL conversion if input was modified
+  if (strcmp(normalized_url, argv[url_index]) != 0) {
+    printf("URL normalized: '%s' -> '%s'\n", argv[url_index], normalized_url);
+  }
+
+  url = smb2_parse_url(smb2, normalized_url);
   if (url == NULL) {
     fprintf(stderr, "Failed to parse url: %s\n",
             smb2_get_error(smb2));
