@@ -169,16 +169,61 @@ static int parse_two_args(char *arg_str, char **arg1, char **arg2)
 
 static void normalize_path(char *path)
 {
-  int len = strlen(path);
-  // Ensure path ends with '/' if it's not root
-  if (len > 1 && path[len-1] != '/') {
-    strcat(path, "/");
-  }
+  char result[1024];
+  char *segments[256];  // Array to store path segments
+  int segment_count = 0;
+  char *token;
+  char *path_copy;
+  int i;
+  
   // Ensure path starts with '/'
   if (path[0] != '/') {
     memmove(path + 1, path, strlen(path) + 1);
     path[0] = '/';
   }
+  
+  // Make a copy for tokenization
+  path_copy = strdup(path);
+  if (path_copy == NULL) {
+    return;  // Memory allocation failed, keep original path
+  }
+  
+  // Split path into segments
+  token = strtok(path_copy, "/");
+  while (token != NULL && segment_count < 256) {
+    if (strcmp(token, ".") == 0) {
+      // Current directory - skip
+    } else if (strcmp(token, "..") == 0) {
+      // Parent directory - remove last segment if exists
+      if (segment_count > 0) {
+        segment_count--;
+      }
+    } else if (strlen(token) > 0) {
+      // Regular segment - add to array
+      segments[segment_count] = strdup(token);
+      if (segments[segment_count] != NULL) {
+        segment_count++;
+      }
+    }
+    token = strtok(NULL, "/");
+  }
+  
+  // Reconstruct normalized path
+  if (segment_count == 0) {
+    strcpy(result, "/");
+  } else {
+    strcpy(result, "");
+    for (i = 0; i < segment_count; i++) {
+      strcat(result, "/");
+      strcat(result, segments[i]);
+      free(segments[i]);  // Free the duplicated segment
+    }
+  }
+  
+  // Copy result back to original path
+  strcpy(path, result);
+  
+  free(path_copy);
 }
 
 static char* resolve_path(const char *path)
@@ -198,7 +243,7 @@ static char* resolve_path(const char *path)
   }
   
   normalize_path(resolved);
-  return resolved;
+  return resolved + 1;
 }
 
 static char* resolve_path_utf8(const char *sjis_path)
@@ -228,12 +273,65 @@ static char* resolve_path_utf8(const char *sjis_path)
   
   free(utf8_path);
   normalize_path(resolved);
-  return resolved;
+  return resolved + 1;
 }
 
 //****************************************************************************
 // Command implementations
 //****************************************************************************
+
+static void cmd_ls(struct smb2_context *smb2, const char *path)
+{
+  struct smb2dir *dir;
+  struct smb2dirent *ent;
+  const char *type;
+  char *target_path;
+  
+  if (path == NULL || strlen(path) == 0) {
+    // No argument - list current directory
+    target_path = current_dir + 1;
+  } else {
+    target_path = resolve_path_utf8(path);
+  }
+
+  dir = smb2_opendir(smb2, target_path);
+  if (dir == NULL) {
+    printf("Failed to open directory '%s': %s\n", target_path, smb2_get_error(smb2));
+    return;
+  }
+
+  printf("Directory listing for '%s':\n", target_path);
+  printf("%-30s %-10s %10s\n", "Name", "Type", "Size");
+  printf("%-30s %-10s %10s\n", "----", "----", "----");
+
+  while ((ent = smb2_readdir(smb2, dir))) {
+    char *sjis_name;
+    
+    switch (ent->st.smb2_type) {
+    case SMB2_TYPE_LINK:
+      type = "LINK";
+      break;
+    case SMB2_TYPE_FILE:
+      type = "FILE";
+      break;
+    case SMB2_TYPE_DIRECTORY:
+      type = "DIR";
+      break;
+    default:
+      type = "UNKNOWN";
+      break;
+    }
+    
+    // Convert filename from UTF-8 to SJIS for display
+    sjis_name = utf8_to_sjis(ent->name);
+    printf("%-30s %-10s %10lu\n", sjis_name ? sjis_name : ent->name, type, (unsigned long)ent->st.smb2_size);
+    if (sjis_name) free(sjis_name);
+  }
+
+  smb2_closedir(smb2, dir);
+}
+
+//----------------------------------------------------------------------------
 
 static void cmd_cd(struct smb2_context *smb2, const char *path)
 {
@@ -258,7 +356,7 @@ static void cmd_cd(struct smb2_context *smb2, const char *path)
   smb2_closedir(smb2, dir);
   
   // Update current directory
-  strcpy(current_dir, resolved_path);
+  strcpy(current_dir, resolved_path - 1);
   
   // Remove trailing slash if not root
   int len = strlen(current_dir);
@@ -268,6 +366,8 @@ static void cmd_cd(struct smb2_context *smb2, const char *path)
   
   printf("Changed directory to: %s\n", current_dir);
 }
+
+//----------------------------------------------------------------------------
 
 static void cmd_mkdir(struct smb2_context *smb2, const char *path)
 {
@@ -288,6 +388,8 @@ static void cmd_mkdir(struct smb2_context *smb2, const char *path)
   printf("Directory '%s' created successfully\n", target_path);
 }
 
+//----------------------------------------------------------------------------
+
 static void cmd_rmdir(struct smb2_context *smb2, const char *path)
 {
   char *target_path;
@@ -307,6 +409,8 @@ static void cmd_rmdir(struct smb2_context *smb2, const char *path)
   printf("Directory '%s' removed successfully\n", target_path);
 }
 
+//----------------------------------------------------------------------------
+
 static void cmd_rm(struct smb2_context *smb2, const char *path)
 {
   char *target_path;
@@ -325,6 +429,8 @@ static void cmd_rm(struct smb2_context *smb2, const char *path)
   
   printf("File '%s' removed successfully\n", target_path);
 }
+
+//----------------------------------------------------------------------------
 
 static const char* format_time(uint64_t timestamp)
 {
@@ -354,7 +460,7 @@ static const char* format_size(uint64_t size)
   } else if (size >= 1024ULL) {
     sprintf(size_str, "%.1f KB", (double)size / 1024ULL);
   } else {
-    sprintf(size_str, "%llu bytes", (unsigned long long)size);
+    sprintf(size_str, "%lu bytes", (unsigned long)size);
   }
   
   return size_str;
@@ -404,6 +510,8 @@ static void cmd_stat(struct smb2_context *smb2, const char *path)
   printf("Birth time:  %s\n", format_time(st.smb2_btime));
 }
 
+//----------------------------------------------------------------------------
+
 static void cmd_statvfs(struct smb2_context *smb2, const char *path)
 {
   char *target_path;
@@ -413,7 +521,7 @@ static void cmd_statvfs(struct smb2_context *smb2, const char *path)
   
   if (path == NULL || strlen(path) == 0) {
     // No path specified, use current directory
-    target_path = current_dir;
+    target_path = current_dir + 1;
   } else {
     target_path = resolve_path_utf8(path);
   }
@@ -445,6 +553,8 @@ static void cmd_statvfs(struct smb2_context *smb2, const char *path)
   printf("Mount flags:      0x%08lx\n", (unsigned long)statvfs.f_flag);
   printf("Max filename:     %lu\n", (unsigned long)statvfs.f_namemax);
 }
+
+//----------------------------------------------------------------------------
 
 static void cmd_lcd(const char *path)
 {
@@ -480,6 +590,8 @@ static void cmd_lcd(const char *path)
   
   printf("Changed local directory to: %s\n", local_dir);
 }
+
+//----------------------------------------------------------------------------
 
 static void cmd_get(struct smb2_context *smb2, const char *remote_path, const char *local_path)
 {
@@ -544,7 +656,7 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
   }
   
   // Open local file for writing
-  local_fd = open(target_local, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  local_fd = open(target_local, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
   if (local_fd < 0) {
     printf("Failed to create local file '%s': %s\n", target_local, strerror(errno));
     smb2_close(smb2, fh);
@@ -571,6 +683,8 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
   close(local_fd);
   smb2_close(smb2, fh);
 }
+
+//----------------------------------------------------------------------------
 
 static void cmd_put(struct smb2_context *smb2, const char *local_path, const char *remote_path)
 {
@@ -609,7 +723,7 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
     snprintf(remote_full_path, sizeof(remote_full_path), "%s/%s", 
              strcmp(current_dir, "/") == 0 ? "" : current_dir, utf8_filename ? utf8_filename : filename);
     if (utf8_filename) free(utf8_filename);
-    target_remote = remote_full_path;
+    target_remote = remote_full_path + 1;
   } else {
     target_remote = resolve_path_utf8(remote_path);
   }
@@ -638,7 +752,7 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
   }
   
   // Open remote file for writing
-  fh = smb2_open(smb2, target_remote, O_WRONLY | O_CREAT | O_TRUNC);
+  fh = smb2_open(smb2, target_remote, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY);
   if (fh == NULL) {
     printf("Failed to create remote file '%s': %s\n", target_remote, smb2_get_error(smb2));
     close(local_fd);
@@ -666,56 +780,7 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
   smb2_close(smb2, fh);
 }
 
-static void cmd_ls(struct smb2_context *smb2, const char *path)
-{
-  struct smb2dir *dir;
-  struct smb2dirent *ent;
-  const char *type;
-  char *target_path;
-  
-  if (path == NULL || strlen(path) == 0) {
-    // No argument - list current directory
-    target_path = current_dir;
-  } else {
-    target_path = resolve_path_utf8(path);
-  }
-
-  dir = smb2_opendir(smb2, target_path);
-  if (dir == NULL) {
-    printf("Failed to open directory '%s': %s\n", target_path, smb2_get_error(smb2));
-    return;
-  }
-
-  printf("Directory listing for '%s':\n", target_path);
-  printf("%-30s %-10s %15s\n", "Name", "Type", "Size");
-  printf("%-30s %-10s %15s\n", "----", "----", "----");
-
-  while ((ent = smb2_readdir(smb2, dir))) {
-    char *sjis_name;
-    
-    switch (ent->st.smb2_type) {
-    case SMB2_TYPE_LINK:
-      type = "LINK";
-      break;
-    case SMB2_TYPE_FILE:
-      type = "FILE";
-      break;
-    case SMB2_TYPE_DIRECTORY:
-      type = "DIR";
-      break;
-    default:
-      type = "UNKNOWN";
-      break;
-    }
-    
-    // Convert filename from UTF-8 to SJIS for display
-    sjis_name = utf8_to_sjis(ent->name);
-    printf("%-30s %-10s %15llu\n", sjis_name ? sjis_name : ent->name, type, (unsigned long long)ent->st.smb2_size);
-    if (sjis_name) free(sjis_name);
-  }
-
-  smb2_closedir(smb2, dir);
-}
+//----------------------------------------------------------------------------
 
 static int execute_command(struct smb2_context *smb2, char *cmdline)
 {
