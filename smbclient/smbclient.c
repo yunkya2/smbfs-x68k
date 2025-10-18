@@ -40,6 +40,8 @@
 
 #include <smb2.h>
 #include <libsmb2.h>
+#include <libsmb2-raw.h>
+#include <libsmb2-dcerpc-srvsvc.h>
 
 //****************************************************************************
 // Global variables
@@ -47,6 +49,7 @@
 
 static char current_dir[1024] = "/";
 static char local_dir[1024] = ".";
+static int is_finished = 0;
 
 //****************************************************************************
 // for debugging
@@ -614,29 +617,180 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
   smb2_closedir(smb2, dir);
 }
 
+static void share_enum_cb(struct smb2_context *smb2, int status,
+                          void *command_data, void *private_data)
+{
+  struct srvsvc_NetrShareEnum_rep *rep = command_data;
+  int i;
+
+  if (status) {
+    printf("Failed to enumerate shares (%s) %s\n",
+           strerror(-status), smb2_get_error(smb2));
+    is_finished = 1;
+    return;
+  }
+
+  printf("Available services on the server:\n");
+  printf("%-20s %-30s %s\n", "Share name", "Comment", "Type");
+  printf("%-20s %-30s %s\n", "----------", "-------", "----");
+
+  for (i = 0; i < rep->ses.ShareInfo.Level1.EntriesRead; i++) {
+    const char *share_name = rep->ses.ShareInfo.Level1.Buffer->share_info_1[i].netname.utf8;
+    const char *comment = rep->ses.ShareInfo.Level1.Buffer->share_info_1[i].remark.utf8;
+    uint32_t type = rep->ses.ShareInfo.Level1.Buffer->share_info_1[i].type;
+    
+    printf("%-20s %-30s ", share_name, comment ? comment : "");
+    
+    switch (type & 3) {
+    case SHARE_TYPE_DISKTREE:
+      printf("Disk");
+      break;
+    case SHARE_TYPE_PRINTQ:
+      printf("Printer");
+      break;
+    case SHARE_TYPE_DEVICE:
+      printf("Device");
+      break;
+    case SHARE_TYPE_IPC:
+      printf("IPC");
+      break;
+    default:
+      printf("Unknown");
+      break;
+    }
+    
+    if (type & SHARE_TYPE_TEMPORARY) {
+      printf(" (Temporary)");
+    }
+    if (type & SHARE_TYPE_HIDDEN) {
+      printf(" (Hidden)");
+    }
+    
+    printf("\n");
+  }
+
+  smb2_free_data(smb2, rep);
+  is_finished = 1;
+}
+
+static int list_shares(const char *server, const char *user)
+{
+  struct smb2_context *smb2;
+  int ret = 0;
+
+  smb2 = smb2_init_context();
+  if (smb2 == NULL) {
+    fprintf(stderr, "Failed to init context\n");
+    return 1;
+  }
+
+  if (user) {
+    smb2_set_user(smb2, user);
+  }
+
+  smb2_set_security_mode(smb2, SMB2_NEGOTIATE_SIGNING_ENABLED);
+
+  if (smb2_connect_share(smb2, server, "IPC$", NULL) < 0) {
+    printf("Failed to connect to IPC$ on %s: %s\n", server, smb2_get_error(smb2));
+    smb2_destroy_context(smb2);
+    return 1;
+  }
+
+  if (smb2_share_enum_async(smb2, SHARE_INFO_1, share_enum_cb, NULL) != 0) {
+    printf("Failed to start share enumeration: %s\n", smb2_get_error(smb2));
+    smb2_destroy_context(smb2);
+    return 1;
+  }
+
+  // Simple event loop
+  while (!is_finished) {
+    int events = smb2_which_events(smb2);
+    
+    // Simple polling mechanism - just service the connection
+    if (smb2_service(smb2, events) < 0) {
+      printf("smb2_service failed: %s\n", smb2_get_error(smb2));
+      ret = 1;
+      break;
+    }
+  }
+
+  smb2_disconnect_share(smb2);
+  smb2_destroy_context(smb2);
+  return ret;
+}
+
 //****************************************************************************
 // Dummy program entry
 //****************************************************************************
+
+static void usage(void)
+{
+  fprintf(stderr, "Usage:\n");
+  fprintf(stderr, "smbclient <smb2-url>                  - Interactive mode\n");
+  fprintf(stderr, "smbclient -L <smb2-url>               - List available services\n\n");
+  fprintf(stderr, "URL format: smb://[<domain;][<username>@]<host>>[:<port>][/<share>/<path>]\n");
+}
 
 int main(int argc, char *argv[])
 {
   struct smb2_context *smb2;
   struct smb2_url *url;
+  int list_mode = 0;
+  int url_index = 1;
 
+  // Parse command line options
   if (argc < 2) {
-    fprintf(stderr, "Usage:\n");
-    fprintf(stderr, "smbclient <smb2-url>\n\n");
-    fprintf(stderr, "URL format: smb://[<domain;][<username>@]<host>>[:<port>]/<share>/<path>\n");
+    usage();
     exit(1);
   }
 
+  if (strcmp(argv[1], "-L") == 0) {
+    list_mode = 1;
+    url_index = 2;
+    if (argc < 3) {
+      usage();
+      exit(1);
+    }
+  }
+
+  // For list mode, handle URL parsing differently
+  if (list_mode) {
+    char *server_url = argv[url_index];
+    char *user = NULL;
+    char *server = NULL;
+    
+    // Parse the URL to extract server and user
+    smb2 = smb2_init_context();
+    if (smb2 == NULL) {
+      fprintf(stderr, "Failed to init context\n");
+      exit(1);
+    }
+    
+    url = smb2_parse_url(smb2, server_url);
+    if (url == NULL) {
+      fprintf(stderr, "Failed to parse url: %s\n", smb2_get_error(smb2));
+      exit(1);
+    }
+    
+    server = (char *)url->server;
+    user = (char *)url->user;
+    
+    int result = list_shares(server, user);
+    
+    smb2_destroy_url(url);
+    smb2_destroy_context(smb2);
+    
+    exit(result);
+  }
+
+  // Interactive mode
   smb2 = smb2_init_context();
   if (smb2 == NULL) {
     fprintf(stderr, "Failed to init context\n");
     exit(0);
   }
 
-  url = smb2_parse_url(smb2, argv[1]);
+  url = smb2_parse_url(smb2, argv[url_index]);
   if (url == NULL) {
     fprintf(stderr, "Failed to parse url: %s\n",
             smb2_get_error(smb2));
