@@ -1482,8 +1482,6 @@ int main(int argc, char *argv[])
     free(command_string);
   } else {
     // Interactive mode
-    char cmdline[256];
-
     pthread_mutex_lock(&keepalive_mutex);
     if (pthread_create(&keepalive_thread, NULL, keepalive_thread_func, smb2) != 0) {
       printf("Failed to create keepalive thread\n");
@@ -1496,17 +1494,18 @@ int main(int argc, char *argv[])
     
     while (1) {
       printf("smb:%s> ", current_dir);
+      fflush(stdout);
 
+      struct dos_inpptr cmdline;
       pthread_mutex_unlock(&keepalive_mutex);
-      char *res = fgets(cmdline, sizeof(cmdline), stdin);
+      cmdline.max = 255;
+      _dos_getss(&cmdline);
       pthread_mutex_lock(&keepalive_mutex);
-      if (res == NULL) {
-        break;
-      }
+      printf("smb:%s> %s\n", current_dir, cmdline.buffer);  // Echo command
 
-      trim_newline(cmdline);
+      trim_newline(cmdline.buffer);
       
-      if (execute_command(smb2, cmdline)) {
+      if (execute_command(smb2, cmdline.buffer) == 1) {
         break;  // Exit command was issued
       }
     }
