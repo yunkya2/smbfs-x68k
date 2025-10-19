@@ -1142,17 +1142,16 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
     } else {
       printf("Unknown command: %s\n", cmd);
       printf("Type 'help' for available commands\n");
+      return -1; // Unknown command
     }
   }
-  
+
   return 0;  // Continue execution
 }
 
 static int execute_command_string(struct smb2_context *smb2, const char *command_string)
 {
   char *commands = strdup(command_string);
-  char *cmd_copy;
-  char *token;
   int result = 0;
   
   if (commands == NULL) {
@@ -1161,24 +1160,23 @@ static int execute_command_string(struct smb2_context *smb2, const char *command
   }
   
   // Split commands by semicolon
-  cmd_copy = commands;
-  while ((token = strtok(cmd_copy, ";")) != NULL) {
-    cmd_copy = NULL;  // For subsequent calls to strtok
-    
-    // Trim leading/trailing spaces
-    char *trimmed = trim_spaces(token);
+  char *cmd = commands;
+  char *nextcmd = commands;
+  while (nextcmd != NULL) {
+    cmd = nextcmd;
+    nextcmd = strchr(cmd, ';');
+    if (nextcmd != NULL) {
+      *nextcmd++ = '\0';
+    }
+    char *trimmed = trim_spaces(cmd);
     if (trimmed != NULL) {
-      char *cmd_line = strdup(trimmed);
-      if (cmd_line != NULL) {
-        result = execute_command(smb2, cmd_line);
-        free(cmd_line);
-        if (result) {
-          break;  // Exit command was issued
-        }
+      result = execute_command(smb2, cmd);
+      if (result != 0) {
+        break;  // Exit command was issued
       }
     }
   }
-  
+
   free(commands);
   return result;
 }
@@ -1360,7 +1358,7 @@ int main(int argc, char *argv[])
   struct smb2_url *url;
   int list_mode = 0;
   int command_mode = 0;
-  int url_index = 1;
+  int url_index = 0;
   char *command_string = NULL;
 
   // Parse command line options
@@ -1369,34 +1367,34 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
-  // Check for -L option first
-  if (strcmp(argv[1], "-L") == 0) {
-    list_mode = 1;
-    url_index = 2;
-    if (argc < 3) {
-      usage();
-      exit(1);
-    }
-  } else {
-    // Check for -c option in various positions
-    for (int i = 1; i < argc - 1; i++) {
-      if (strcmp(argv[i], "-c") == 0) {
-        command_mode = 1;
-        command_string = argv[i + 1];
-        
-        // URL should be before -c option
-        if (i == 1) {
-          printf("Error: URL must be specified before -c option\n");
-          usage();
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "-L") == 0) {
+      list_mode = 1;
+    } else if (strcmp(argv[i], "-c") == 0) {
+      command_mode = 1;
+      int command_len = 1;
+      command_string = malloc(command_len);
+      if (command_string == NULL) {
+        fprintf(stderr, "Memory allocation failed\n");
+        exit(1);
+      }
+      command_string[0] = '\0';
+      for (i++; i < argc; i++) {
+        command_len += strlen(argv[i]) + 1;
+        command_string = realloc(command_string, command_len);
+        if (command_string == NULL) {
+          fprintf(stderr, "Memory allocation failed\n");
           exit(1);
         }
-        url_index = 1;  // URL is always first when -c is used
-        break;
+        strcat(command_string, argv[i]);
+        if (i < argc - 1) {
+          strcat(command_string, " ");
+        }
       }
-    }
-    
-    // If no -c option found, check if we have enough arguments
-    if (!command_mode && argc < 2) {
+    } else if (url_index == 0) {
+      url_index = i;  // First non-option argument is URL
+    } else {
+      // Unknown option
       usage();
       exit(1);
     }
@@ -1447,6 +1445,7 @@ int main(int argc, char *argv[])
   if (command_mode) {
     // Execute the specified command(s) and exit
     execute_command_string(smb2, command_string);
+    free(command_string);
   } else {
     // Interactive mode
     char cmdline[256];
