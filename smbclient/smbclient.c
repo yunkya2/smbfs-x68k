@@ -51,6 +51,7 @@
 //****************************************************************************
 
 #define PATH_LEN 256
+#define TIMEZONE (9 * 3600) // JST (UTC+9)
 
 //****************************************************************************
 // Global variables
@@ -319,7 +320,7 @@ static const char *format_time(uint64_t timestamp)
   static char time_str[64];
   time_t t = (time_t)timestamp;
 
-  t += 9 * 3600; // Convert UTC to JST (UTC+9)
+  t += TIMEZONE;
   struct tm *tm_info = localtime(&t);
   
   if (tm_info) {
@@ -656,7 +657,21 @@ static int get_one_file(struct smb2_context *smb2, const char *target_remote, co
     smb2_close(smb2, fh);
     return -1;
   }
-  
+
+  struct smb2_stat_64 st;
+  if (smb2_fstat(smb2, fh, &st) == 0) {
+    time_t mtime = (time_t)st.smb2_mtime + TIMEZONE;
+    struct tm *tm = localtime(&mtime);
+    uint32_t datetime;
+    datetime = ((tm->tm_year - 80) << 25) |
+               ((tm->tm_mon + 1) << 21) |
+               ((tm->tm_mday) << 16) |
+                ((tm->tm_hour) << 11) |
+                ((tm->tm_min) << 5) |
+                ((tm->tm_sec) >> 1);
+    _dos_filedate(local_fd, datetime);
+  }
+
   close(local_fd);
   smb2_close(smb2, fh);
 #else
@@ -884,7 +899,26 @@ static int put_one_file(struct smb2_context *smb2, const char *target_local, con
     smb2_close(smb2, fh);
     return -1;
   }
-  
+
+  uint32_t datetime;
+  datetime = _dos_filedate(local_fd, 0);
+  if (datetime < 0xffff0000) {
+    struct smb2_timeval tv[2];
+    struct tm tm;
+    tm.tm_year = ((datetime >> 25) & 0x7f) + 80;
+    tm.tm_mon  = ((datetime >> 21) & 0x0f) - 1;
+    tm.tm_mday = (datetime >> 16) & 0x1f;
+    tm.tm_hour = (datetime >> 11) & 0x1f;
+    tm.tm_min  = (datetime >> 5) & 0x3f;
+    tm.tm_sec  = (datetime << 1) & 0x3f;
+    time_t mtime = mktime(&tm) - TIMEZONE;
+    tv[0].tv_sec = mtime;
+    tv[0].tv_usec = 0;
+    tv[1].tv_sec = mtime;
+    tv[1].tv_usec = 0;
+    smb2_futimes(smb2, fh, tv);
+  }
+
   close(local_fd);
   smb2_close(smb2, fh);
 #else
