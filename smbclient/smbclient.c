@@ -33,6 +33,7 @@
 #include <errno.h>
 #include <time.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -49,7 +50,7 @@
 // Macros and definitions
 //****************************************************************************
 
-#define PATH_LEN 1024
+#define PATH_LEN 256
 
 //****************************************************************************
 // Global variables
@@ -129,6 +130,84 @@ static int parse_two_args(char *arg_str, char **arg1, char **arg2)
   return 1;
 }
 
+
+// Get the byte length of the first SJIS character at the given position
+static int sjis_char_len(const char *s)
+{
+  unsigned char c = (unsigned char)*s;
+  
+  if (c == 0) return 0;  // End of string
+  
+  // SJIS first byte ranges:
+  // 0x81-0x9F, 0xE0-0xFC are double-byte characters
+  if ((c >= 0x81 && c <= 0x9F) || (c >= 0xE0 && c <= 0xFC)) {
+    return 2;  // Double-byte character
+  }
+  
+  return 1;  // Single-byte character (ASCII or half-width katakana)
+}
+
+// Compare SJIS characters (returns 1 if they match, 0 if not)
+static int sjis_chars_equal(const char *s1, const char *s2)
+{
+  int len1 = sjis_char_len(s1);
+  int len2 = sjis_char_len(s2);
+  
+  if (len1 != len2) return 0;
+  
+  for (int i = 0; i < len1; i++) {
+    if (s1[i] != s2[i]) return 0;
+  }
+  
+  return 1;
+}
+
+// SJIS aware wildcard matching function
+static int match_wildcard(const char *pattern, const char *string)
+{
+  const char *p = pattern;
+  const char *s = string;
+  const char *star = NULL;
+  const char *ss = s;
+
+  if (strlen(pattern) == 0) {
+    return 1;
+  }
+
+  while (*s) {
+    if (*p == '?') {
+      // '?' matches any single SJIS character
+      p++;
+      s += sjis_char_len(s);
+    } else if (*p == '*') {
+      // '*' matches any sequence of characters
+      star = p++;
+      ss = s;
+    } else if (sjis_chars_equal(p, s)) {
+      // SJIS characters match
+      int p_len = sjis_char_len(p);
+      int s_len = sjis_char_len(s);
+      p += p_len;
+      s += s_len;
+    } else if (star) {
+      // No match, but we have a '*' to backtrack to
+      p = star + 1;
+      ss += sjis_char_len(ss);
+      s = ss;
+    } else {
+      // No match and no '*' to backtrack to
+      return 0;
+    }
+  }
+
+  // Skip any trailing '*' in pattern
+  while (*p == '*') {
+    p++;
+  }
+
+  // If we've consumed all of pattern, it's a match
+  return *p == '\0';
+}
 //----------------------------------------------------------------------------
 
 // SJIS -> UTF-8 conversion
@@ -537,17 +616,165 @@ static void cmd_lcd(const char *path)
 
 //----------------------------------------------------------------------------
 
-static void cmd_get(struct smb2_context *smb2, const char *remote_path, const char *local_path)
+static int get_one_file(struct smb2_context *smb2, const char *target_remote, const char *target_local)
 {
   struct smb2fh *fh;
-  char *target_remote;
-  const char *target_local;
-  char local_full_path[PATH_LEN];
   int local_fd;
   uint8_t buffer[8192];
   int bytes_read, bytes_written;
-  struct stat st;
+
+#ifndef SIMULATE_XFER
+  // Open remote file for reading
+  fh = smb2_open(smb2, sjis_to_utf8(target_remote + 1), O_RDONLY);
+  if (fh == NULL) {
+    printf("Failed to open remote file '%s': %s\n", target_remote, smb2_get_error(smb2));
+    return -1;
+  }
   
+  // Open local file for writing
+  local_fd = open(target_local, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
+  if (local_fd < 0) {
+    printf("Failed to create local file '%s': %s\n", target_local, strerror(errno));
+    smb2_close(smb2, fh);
+    return -1;
+  }
+  
+  printf("Downloading '%s' to '%s'\n", target_remote, target_local);
+  
+  // Copy data
+  while ((bytes_read = smb2_read(smb2, fh, buffer, sizeof(buffer))) > 0) {
+    bytes_written = write(local_fd, buffer, bytes_read);
+    if (bytes_written != bytes_read) {
+      printf("Failed to write to local file: %s\n", strerror(errno));
+      break;
+    }
+  }
+  
+  if (bytes_read < 0) {
+    printf("Failed to read from remote file: %s\n", smb2_get_error(smb2));
+    close(local_fd);
+    smb2_close(smb2, fh);
+    return -1;
+  }
+  
+  close(local_fd);
+  smb2_close(smb2, fh);
+#else
+  printf("Simulated download of '%s' to '%s'\n", target_remote, target_local);
+#endif
+  return 0;
+}
+
+static int get_multiple_files(struct smb2_context *smb2, const char *target_remote, const char *target_local)
+{
+  char local_path[PATH_LEN];
+  char remote_path[PATH_LEN];
+  char directory_path[PATH_LEN];
+  char pattern[PATH_LEN];
+  struct smb2dir *dir;
+  struct smb2dirent *ent;
+  int files_downloaded = 0;
+  int sub_files;
+
+#ifdef VERBOSE
+  printf("Getting multiple files from '%s' to '%s'\n", target_remote, target_local);
+#endif
+
+  // Separate directory path and filename pattern
+  strcpy(remote_path, target_remote);
+  char *last_slash = strrchr(remote_path, '/');
+
+  if (last_slash == NULL) {
+    // No slash found - treat as pattern in current directory
+    strcpy(directory_path, "/");
+    strcpy(pattern, remote_path);
+  } else if (last_slash == remote_path) {
+    // Slash is at the beginning - root directory
+    strcpy(directory_path, "/");
+    strcpy(pattern, last_slash + 1);
+  } else {
+    // General case
+    strncpy(directory_path, remote_path, last_slash - remote_path);
+    directory_path[last_slash - remote_path] = '\0';
+    strcpy(pattern, last_slash + 1);
+  }
+
+#ifdef VERBOSE
+  printf("Listing directory '%s' for pattern '%s'\n", directory_path, pattern);
+#endif
+
+  dir = smb2_opendir(smb2, sjis_to_utf8(directory_path + 1));
+  if (dir == NULL) {
+    printf("Failed to open remote directory '%s': %s\n", directory_path, smb2_get_error(smb2));
+    return -1;
+  }
+
+  while ((ent = smb2_readdir(smb2, dir))) {
+    // Skip . and .. directories
+    if (strcmp(ent->name, ".") == 0 || strcmp(ent->name, "..") == 0) {
+      continue;
+    }
+
+    char *sjis_name = utf8_to_sjis(ent->name);
+    if (sjis_name == NULL) {
+      continue; // Skip if conversion failed
+    }
+
+    // Check if filename matches the pattern
+    if (match_wildcard(pattern, sjis_name)) {
+      // Build full remote path
+      strcpy(remote_path, directory_path);
+      strncat(remote_path, "/", sizeof(remote_path) - strlen(remote_path) - 1);
+      strncat(remote_path, sjis_name, sizeof(remote_path) - strlen(remote_path) - 1);
+      normalize_path(remote_path);
+
+      // Build local path
+      strcpy(local_path, target_local);
+      strncat(local_path, "/", sizeof(local_path) - strlen(local_path) - 1);
+      strncat(local_path, sjis_name, sizeof(local_path) - strlen(local_path) - 1);
+
+#ifdef VERBOSE
+      printf("Processing '%s' ('%s')\n", remote_path, local_path);
+#endif
+
+      if (ent->st.smb2_type == SMB2_TYPE_DIRECTORY) {
+        strncat(remote_path, "/", sizeof(remote_path) - strlen(remote_path) - 1);
+        normalize_path(remote_path);
+
+        // Create local directory
+#ifndef SIMULATE_XFER
+        if (mkdir(local_path, 0755) != 0 && errno != EEXIST) {
+          // Continue anyway -- directory might already exist
+        } else
+#endif
+        printf("Created local directory '%s'\n", local_path);
+
+        // Process both files and directories through get_multiple_files
+        sub_files = get_multiple_files(smb2, remote_path, local_path);
+      } else {
+        sub_files = get_one_file(smb2, remote_path, local_path) < 0 ? -1 : 1;
+      }
+
+      if (sub_files > 0) {
+        files_downloaded += sub_files;
+      } else {
+        files_downloaded = -1;
+        break;
+      }
+    }
+  }
+  smb2_closedir(smb2, dir);
+
+  return files_downloaded;
+}
+
+static void cmd_get(struct smb2_context *smb2, const char *remote_path, const char *local_path)
+{
+  char *target_remote;
+  const char *target_local;
+  char local_full_path[PATH_LEN];
+  struct stat st;
+
   if (remote_path == NULL || strlen(remote_path) == 0) {
     printf("Usage: get <remote_path> [local_path]\n");
     return;
@@ -580,53 +807,195 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
     target_local = local_full_path;
   }
 
-  // Open remote file for reading
-  fh = smb2_open(smb2, sjis_to_utf8(target_remote + 1), O_RDONLY);
-  if (fh == NULL) {
-    printf("Failed to open remote file '%s': %s\n", target_remote, smb2_get_error(smb2));
+  get_one_file(smb2, target_remote, target_local);
+}
+
+static void cmd_mget(struct smb2_context *smb2, const char *remote_path, const char *local_path)
+{
+  char *target_remote;
+  struct stat st;
+
+  if (remote_path == NULL || strlen(remote_path) == 0) {
+    printf("Usage: mget <remote_path> [local_path]\n");
     return;
   }
   
-  // Open local file for writing
-  local_fd = open(target_local, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
+  if (local_path == NULL || strlen(local_path) == 0) {
+    local_path = ".";
+  }
+  target_remote = resolve_path(remote_path);
+
+  // Check if local path is a directory
+  if (!(strcmp(local_path, ".") == 0 ||
+        strcmp(local_path, "..") == 0 ||
+        (stat(local_path, &st) == 0 && S_ISDIR(st.st_mode)))) {
+    printf("Local path '%s' is not a directory\n", local_path);
+    return;
+  }
+
+  int files_downloaded = get_multiple_files(smb2, target_remote, local_path);
+  
+  if (files_downloaded < 0) {
+    printf("Error occurred during multiple file download\n");
+  } else {
+    printf("Downloaded %d file(s)\n", files_downloaded);
+  }
+}
+
+//----------------------------------------------------------------------------
+
+static int put_one_file(struct smb2_context *smb2, const char *target_local, const char *target_remote)
+{
+  struct smb2fh *fh;
+  int local_fd;
+  uint8_t buffer[8192];
+  int bytes_read, bytes_written;
+
+#ifndef SIMULATE_XFER
+  // Open local file for reading
+  local_fd = open(target_local, O_RDONLY | O_BINARY);
   if (local_fd < 0) {
-    printf("Failed to create local file '%s': %s\n", target_local, strerror(errno));
-    smb2_close(smb2, fh);
-    return;
+    printf("Failed to open local file '%s': %s\n", target_local, strerror(errno));
+    return -1;
   }
   
-  printf("Downloading '%s' to '%s'\n", target_remote, target_local);
+  // Open remote file for writing
+  fh = smb2_open(smb2, sjis_to_utf8(target_remote + 1), O_WRONLY | O_CREAT | O_TRUNC);
+  if (fh == NULL) {
+    printf("Failed to create remote file '%s': %s\n", target_remote, smb2_get_error(smb2));
+    close(local_fd);
+    return -1;
+  }
+  
+  printf("Uploading '%s' to '%s'\n", target_local, target_remote);
   
   // Copy data
-  while ((bytes_read = smb2_read(smb2, fh, buffer, sizeof(buffer))) > 0) {
-    bytes_written = write(local_fd, buffer, bytes_read);
+  while ((bytes_read = read(local_fd, buffer, sizeof(buffer))) > 0) {
+    bytes_written = smb2_write(smb2, fh, buffer, bytes_read);
     if (bytes_written != bytes_read) {
-      printf("Failed to write to local file: %s\n", strerror(errno));
+      printf("Failed to write to remote file: %s\n", smb2_get_error(smb2));
       break;
     }
   }
   
   if (bytes_read < 0) {
-    printf("Failed to read from remote file: %s\n", smb2_get_error(smb2));
-  } else {
-    printf("Download completed successfully\n");
+    printf("Failed to read from local file: %s\n", strerror(errno));
+    close(local_fd);
+    smb2_close(smb2, fh);
+    return -1;
   }
   
   close(local_fd);
   smb2_close(smb2, fh);
+#else
+  printf("Simulated upload of '%s' to '%s'\n", target_local, target_remote);
+#endif
+  return 0;
 }
 
-//----------------------------------------------------------------------------
+static int put_multiple_files(struct smb2_context *smb2, const char *target_local, const char *target_remote)
+{
+  char local_path[PATH_LEN];
+  char remote_path[PATH_LEN];
+  char directory_path[PATH_LEN];
+  char pattern[PATH_LEN];
+  DIR *dir;
+  struct dirent *ent;
+  int files_uploaded = 0;
+  int sub_files;
+
+#ifdef VERBOSE
+  printf("Putting multiple files from '%s' to '%s'\n", target_local, target_remote);
+#endif
+
+  strcpy(local_path, target_local);
+  char *last_slash = strrchr(local_path, '/');
+
+  if (last_slash == NULL) {
+    // No slash found - treat as pattern in current directory
+    strcpy(directory_path, "./");
+    strcpy(pattern, local_path);
+  } else if (last_slash == local_path) {
+    // Slash is at the beginning - root directory
+    strcpy(directory_path, "/");
+    strcpy(pattern, last_slash + 1);
+  } else {
+    // General case
+    strncpy(directory_path, local_path, last_slash - local_path);
+    directory_path[last_slash - local_path] = '\0';
+    strcpy(pattern, last_slash + 1);
+  }
+
+#ifdef VERBOSE
+  printf("Listing local directory '%s' for pattern '%s'\n", directory_path, pattern);
+#endif
+
+  dir = opendir(directory_path);
+  if (dir == NULL) {
+    printf("Failed to open local directory '%s': %s\n", directory_path, strerror(errno));
+    return -1;
+  }
+
+  while ((ent = readdir(dir))) {
+    // Skip . and .. directories
+    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+      continue;
+    }
+
+    // Check if filename matches the pattern
+    if (match_wildcard(pattern, ent->d_name)) {
+      // Build full local path
+      strcpy(local_path, directory_path);
+      strncat(local_path, "/", sizeof(local_path) - strlen(local_path) - 1);
+      strncat(local_path, ent->d_name, sizeof(local_path) - strlen(local_path) - 1);
+
+      // Build remote path
+      strcpy(remote_path, target_remote);
+      strncat(remote_path, "/", sizeof(remote_path) - strlen(remote_path) - 1);
+      strncat(remote_path, ent->d_name, sizeof(remote_path) - strlen(remote_path) - 1);
+      normalize_path(remote_path);
+
+#ifdef VERBOSE
+      printf("Processing '%s' ('%s')\n", local_path, remote_path);
+#endif
+
+      if (ent->d_type == DT_DIR) {
+        strncat(local_path, "/", sizeof(local_path) - strlen(local_path) - 1);
+
+        // Create remote subdirectory
+#ifndef SIMULATE_XFER
+        if (smb2_mkdir(smb2, sjis_to_utf8(remote_path + 1)) != 0) {
+          // Continue anyway - directory might already exist
+        } else
+#endif
+        printf("Created remote directory '%s'\n", remote_path);
+
+        // Process both files and directories through put_multiple_files
+        sub_files = put_multiple_files(smb2, local_path, remote_path);
+      } else {
+        sub_files = put_one_file(smb2, local_path, remote_path) < 0 ? -1 : 1;
+      }
+
+      if (sub_files > 0) {
+        files_uploaded += sub_files;
+      } else {
+        while ((ent = readdir(dir)))
+          ;
+        files_uploaded = -1;
+        break;
+      }
+    }
+  }
+  closedir(dir);
+
+  return files_uploaded;
+}
 
 static void cmd_put(struct smb2_context *smb2, const char *local_path, const char *remote_path)
 {
-  struct smb2fh *fh;
   const char *target_local;
   char *target_remote;
   char remote_full_path[PATH_LEN];
-  int local_fd;
-  uint8_t buffer[8192];
-  int bytes_read, bytes_written;
   struct smb2_stat_64 remote_st;
   
   if (local_path == NULL || strlen(local_path) == 0) {
@@ -660,41 +1029,39 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
     strncat(remote_full_path, filename, sizeof(remote_full_path) - strlen(remote_full_path) - 1);
     target_remote = remote_full_path;
   }
+
+  put_one_file(smb2, target_local, target_remote);
+}
+
+static void cmd_mput(struct smb2_context *smb2, const char *local_path, const char *remote_path)
+{
+  char *target_remote;
+  struct smb2_stat_64 remote_st;
   
-  // Open local file for reading
-  local_fd = open(target_local, O_RDONLY | O_BINARY);
-  if (local_fd < 0) {
-    printf("Failed to open local file '%s': %s\n", target_local, strerror(errno));
+  if (local_path == NULL || strlen(local_path) == 0) {
+    printf("Usage: mput <local_path> [remote_path]\n");
     return;
   }
   
-  // Open remote file for writing
-  fh = smb2_open(smb2, sjis_to_utf8(target_remote + 1), O_WRONLY | O_CREAT | O_TRUNC);
-  if (fh == NULL) {
-    printf("Failed to create remote file '%s': %s\n", target_remote, smb2_get_error(smb2));
-    close(local_fd);
+  if (remote_path == NULL || strlen(remote_path) == 0) {
+    remote_path = "";
+  }
+  target_remote = resolve_path(remote_path);
+  
+  // Check if remote path is a directory
+  if (!(smb2_stat(smb2, sjis_to_utf8(target_remote + 1), &remote_st) == 0 && 
+        remote_st.smb2_type == SMB2_TYPE_DIRECTORY)) {
+    printf("Remote path '%s' is not a directory\n", target_remote);
     return;
   }
+
+  int files_uploaded = put_multiple_files(smb2, local_path, target_remote);
   
-  printf("Uploading '%s' to '%s'\n", target_local, target_remote);
-  
-  // Copy data
-  while ((bytes_read = read(local_fd, buffer, sizeof(buffer))) > 0) {
-    bytes_written = smb2_write(smb2, fh, buffer, bytes_read);
-    if (bytes_written != bytes_read) {
-      printf("Failed to write to remote file: %s\n", smb2_get_error(smb2));
-      break;
-    }
-  }
-  
-  if (bytes_read < 0) {
-    printf("Failed to read from local file: %s\n", strerror(errno));
+  if (files_uploaded < 0) {
+    printf("Error occurred during multiple file upload\n");
   } else {
-    printf("Upload completed successfully\n");
+    printf("Uploaded %d file(s)\n", files_uploaded);
   }
-  
-  close(local_fd);
-  smb2_close(smb2, fh);
 }
 
 //----------------------------------------------------------------------------
@@ -737,6 +1104,8 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
     printf("  statvfs [path]- Show filesystem statistics\n");
     printf("  get <remote> [local] - Download file from server\n");
     printf("  put <local> [remote] - Upload file to server\n");
+    printf("  mget <remote> [local] - Download multiple files from server\n");
+    printf("  mput <local> [remote] - Upload multiple files to server\n");
     printf("  lcd [path]    - Change local directory\n");
     printf("  shell [command] - Execute shell command\n");
     printf("  quit/exit     - Exit the program\n");
@@ -757,27 +1126,23 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
     cmd_statvfs(smb2, arg);  // arg can be NULL for current directory
   } else if (strcmp(cmd, "lcd") == 0) {
     cmd_lcd(arg);  // arg can be NULL to show current local directory
-  } else if (strcmp(cmd, "get") == 0) {
-    char *remote_arg = NULL, *local_arg = NULL;
-    int argc = parse_two_args(arg, &remote_arg, &local_arg);
-    if (argc == 0) {
-      printf("Usage: get <remote_path> [local_path]\n");
-    } else {
-      cmd_get(smb2, remote_arg, local_arg);
-    }
-  } else if (strcmp(cmd, "put") == 0) {
-    char *local_arg = NULL, *remote_arg = NULL;
-    int argc = parse_two_args(arg, &local_arg, &remote_arg);
-    if (argc == 0) {
-      printf("Usage: put <local_path> [remote_path]\n");
-    } else {
-      cmd_put(smb2, local_arg, remote_arg);
-    }
   } else if (strcmp(cmd, "shell") == 0) {
     system(arg ? arg : "");
   } else {
-    printf("Unknown command: %s\n", cmd);
-    printf("Type 'help' for available commands\n");
+    char *arg1 = NULL, *arg2 = NULL;
+    parse_two_args(arg, &arg1, &arg2);
+    if (strcmp(cmd, "get") == 0) {
+      cmd_get(smb2, arg1, arg2);
+    } else if (strcmp(cmd, "mget") == 0) {
+      cmd_mget(smb2, arg1, arg2);
+    } else if (strcmp(cmd, "put") == 0) {
+      cmd_put(smb2, arg1, arg2);
+    } else if (strcmp(cmd, "mput") == 0) {
+      cmd_mput(smb2, arg1, arg2);
+    } else {
+      printf("Unknown command: %s\n", cmd);
+      printf("Type 'help' for available commands\n");
+    }
   }
   
   return 0;  // Continue execution
