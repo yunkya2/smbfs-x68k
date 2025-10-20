@@ -263,6 +263,26 @@ static char* utf8_to_sjis(const char *utf8_str)
 
 //----------------------------------------------------------------------------
 
+// Convert backslashes to forward slashes in SJIS path
+static void convert_path_separator(char *sjis_path)
+{
+  char *p = sjis_path;
+
+  if (sjis_path == NULL) return;
+
+  while (*p) {
+    int char_len = sjis_char_len(p);
+    if (char_len == 1 && *p == '\\') {
+      // Convert backslash to forward slash
+      *p = '/';
+      p++;
+    } else {
+      // Skip SJIS character
+      p += char_len;
+    }
+  }
+}
+
 // Path normalization
 static void normalize_path(char *path)
 {
@@ -627,6 +647,7 @@ static void cmd_lcd(const char *path)
   local_dir[1] = ':';
   local_dir[2] = '\\';
   _dos_curdir(curdrv + 1, &local_dir[3]);
+  convert_path_separator(local_dir);
 
   printf(path == NULL ? "Current local directory: %s\n" : "Changed local directory to: %s\n", local_dir);
 }
