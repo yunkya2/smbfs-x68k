@@ -36,6 +36,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <setjmp.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <pthread.h>
@@ -62,6 +63,8 @@
 //****************************************************************************
 // Local variables
 //****************************************************************************
+
+static jmp_buf jmp_env;
 
 static char current_dir[PATH_LEN] = "/";
 static int is_finished = false;
@@ -1232,7 +1235,7 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
     return 0;
   }
   
-  if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0) {
+  if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0 || cmd[0] == '\x1a') {
     return 1;  // Signal to exit
   } else if (strcmp(cmd, "help") == 0) {
     printf("Available commands:\n");
@@ -1539,8 +1542,14 @@ static void usage(void)
     "    -L                         - List available services on the server\n"
     "    -c \"<commands>\"            - Execute commands separated by semicolons (;)\n\n"
     "  URL format:\n"
-    "    [smb://][<domain;][<username>@]<host>[:<port>][/<share>/<path>]\n"
+    "    [smb://][<domain;][<username>@]<host>[:<port>][/<share>/<path>]\n\n"
+    "  NTLM_USER_FILE environment variable can also be used to specify credentials\n"
   );
+}
+
+static void ctrlc_handler(void)
+{
+  longjmp(jmp_env, 1);
 }
 
 int main(int argc, char *argv[])
@@ -1684,15 +1693,22 @@ int main(int argc, char *argv[])
     }
 
     printf("SMB Client - Type 'help' for commands, 'quit' to exit\n");
-    
+
+    void *old_ctrlc = NULL;
     while (1) {
+      if (old_ctrlc == NULL) {
+        if (setjmp(jmp_env) == 0) {
+          old_ctrlc = _dos_intvcs(0xfff1, ctrlc_handler);
+        }
+      }
+
       printf("smb:%s> ", current_dir);
       fflush(stdout);
 
       struct dos_inpptr cmdline;
       pthread_mutex_unlock(&keepalive_mutex);
       cmdline.max = 255;
-      _dos_getss(&cmdline);
+      _dos_gets(&cmdline);
       pthread_mutex_lock(&keepalive_mutex);
       printf("smb:%s> %s\n", current_dir, cmdline.buffer);  // Echo command
 
@@ -1702,6 +1718,8 @@ int main(int argc, char *argv[])
         break;  // Exit command was issued
       }
     }
+
+    _dos_intvcs(0xfff1, old_ctrlc);
   }
 
   pthread_cancel(keepalive_thread);
