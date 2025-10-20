@@ -552,6 +552,34 @@ static void cmd_rm(struct smb2_context *smb2, const char *path)
 
 //----------------------------------------------------------------------------
 
+static void cmd_rename(struct smb2_context *smb2, const char *old_path, const char *new_path)
+{
+  if (old_path == NULL || strlen(old_path) == 0 || 
+      new_path == NULL || strlen(new_path) == 0) {
+    printf("Usage: rename <old_path> <new_path>\n");
+    return;
+  }
+
+  char target_old[PATH_LEN];
+  char target_new[PATH_LEN];
+  strcpy(target_old, resolve_path(old_path));
+  strcpy(target_new, resolve_path(new_path));
+
+  char target_old_utf8[PATH_LEN];
+  char target_new_utf8[PATH_LEN];
+  strcpy(target_old_utf8, sjis_to_utf8(target_old + 1));
+  strcpy(target_new_utf8, sjis_to_utf8(target_new + 1));
+
+  if (smb2_rename(smb2, target_old_utf8, target_new_utf8) != 0) {
+    printf("Failed to rename '%s' to '%s': %s\n", target_old, target_new, smb2_get_error(smb2));
+    return;
+  }
+  
+  printf("Renamed '%s' to '%s' successfully\n", target_old, target_new);
+}
+
+//----------------------------------------------------------------------------
+
 static void cmd_stat(struct smb2_context *smb2, const char *path)
 {
   char *target_path;
@@ -1172,6 +1200,7 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
     printf("  mkdir <path>  - Create directory\n");
     printf("  rmdir <path>  - Remove empty directory\n");
     printf("  rm <path>     - Remove file\n");
+    printf("  rename <old> <new> - Rename file or directory\n");
     printf("  stat <path>   - Show file/directory information\n");
     printf("  statvfs [path]- Show filesystem statistics\n");
     printf("  get <remote> [local] - Download file from server\n");
@@ -1211,6 +1240,8 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
       cmd_put(smb2, arg1, arg2);
     } else if (strcmp(cmd, "mput") == 0) {
       cmd_mput(smb2, arg1, arg2);
+    } else if (strcmp(cmd, "rename") == 0 || strcmp(cmd, "ren") == 0) {
+      cmd_rename(smb2, arg1, arg2);
     } else {
       printf("Unknown command: %s\n", cmd);
       printf("Type 'help' for available commands\n");
