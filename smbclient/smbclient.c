@@ -35,6 +35,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <ctype.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <pthread.h>
@@ -131,6 +132,7 @@ static int parse_two_args(char *arg_str, char **arg1, char **arg2)
   return 1;
 }
 
+//----------------------------------------------------------------------------
 
 // Get the byte length of the first SJIS character at the given position
 static int sjis_char_len(const char *s)
@@ -148,7 +150,7 @@ static int sjis_char_len(const char *s)
   return 1;  // Single-byte character (ASCII or half-width katakana)
 }
 
-// Compare SJIS characters (returns 1 if they match, 0 if not)
+// Compare SJIS characters (returns the length if equal, 0 if not equal)
 static int sjis_chars_equal(const char *s1, const char *s2)
 {
   int len1 = sjis_char_len(s1);
@@ -156,11 +158,15 @@ static int sjis_chars_equal(const char *s1, const char *s2)
   
   if (len1 != len2) return 0;
   
+  if (len1 == 1 && tolower(*s1) == tolower(*s2)) {
+    return 1; // case insensitive match for single-byte characters
+  }
+
   for (int i = 0; i < len1; i++) {
     if (s1[i] != s2[i]) return 0;
   }
   
-  return 1;
+  return len1;
 }
 
 // SJIS aware wildcard matching function
@@ -170,6 +176,7 @@ static int match_wildcard(const char *pattern, const char *string)
   const char *s = string;
   const char *star = NULL;
   const char *ss = s;
+  int len;
 
   if (strlen(pattern) == 0) {
     return 1;
@@ -184,12 +191,10 @@ static int match_wildcard(const char *pattern, const char *string)
       // '*' matches any sequence of characters
       star = p++;
       ss = s;
-    } else if (sjis_chars_equal(p, s)) {
+    } else if ((len = sjis_chars_equal(p, s))) {
       // SJIS characters match
-      int p_len = sjis_char_len(p);
-      int s_len = sjis_char_len(s);
-      p += p_len;
-      s += s_len;
+      p += len;
+      s += len;
     } else if (star) {
       // No match, but we have a '*' to backtrack to
       p = star + 1;
@@ -209,6 +214,7 @@ static int match_wildcard(const char *pattern, const char *string)
   // If we've consumed all of pattern, it's a match
   return *p == '\0';
 }
+
 //----------------------------------------------------------------------------
 
 // SJIS -> UTF-8 conversion
