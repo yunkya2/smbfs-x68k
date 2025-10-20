@@ -411,19 +411,59 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
     target_path = resolve_path(path);
   }
 
-  dir = smb2_opendir(smb2, sjis_to_utf8(target_path + 1));
+  char directory_path[PATH_LEN];
+  char pattern[PATH_LEN];
+
+  // Check if remote path is a directory
+  struct smb2_stat_64 remote_st;
+  if (smb2_stat(smb2, sjis_to_utf8(target_path + 1), &remote_st) == 0 && 
+      remote_st.smb2_type == SMB2_TYPE_DIRECTORY) {
+    strcpy(directory_path, target_path);
+    strcpy(pattern, "*");
+  } else {
+    // Separate directory path and filename pattern
+    char *last_slash = strrchr(target_path, '/');
+
+    if (last_slash == NULL) {
+      // No slash found - treat as pattern in current directory
+      strcpy(directory_path, "/");
+      strcpy(pattern, target_path);
+    } else if (last_slash == target_path) {
+      // Slash is at the beginning - root directory
+      strcpy(directory_path, "/");
+      strcpy(pattern, last_slash + 1);
+    } else {
+      // General case
+      strncpy(directory_path, target_path, last_slash - target_path);
+      directory_path[last_slash - target_path] = '\0';
+      strcpy(pattern, last_slash + 1);
+    }
+  }
+
+  dir = smb2_opendir(smb2, sjis_to_utf8(directory_path + 1));
   if (dir == NULL) {
-    printf("Failed to open directory '%s': %s\n", target_path, smb2_get_error(smb2));
+    printf("Failed to open directory '%s': %s\n", directory_path, smb2_get_error(smb2));
     return;
   }
 
-  printf("Directory listing for '%s':\n", target_path);
-  printf("  %-30s %-8s %10s %s\n", "Name", "Type", "Size", "Time");
-  printf("  %-30s %-8s %10s %s\n", "----", "----", "----", "----");
-
+  int found = false;
   while ((ent = smb2_readdir(smb2, dir))) {
-    char *sjis_name;
-    
+    char *sjis_name = utf8_to_sjis(ent->name);
+    if (sjis_name == NULL) {
+      continue; // Skip if conversion failed
+    }
+
+    if (!match_wildcard(pattern, sjis_name)) {
+      continue; // Skip non-matching entries
+    }
+
+    if (!found) {
+      printf("Directory listing for '%s':\n", target_path);
+      printf("  %-30s %-8s %10s %s\n", "Name", "Type", "Size", "Time");
+      printf("  %-30s %-8s %10s %s\n", "----", "----", "----", "----");
+      found = true;
+    }
+
     switch (ent->st.smb2_type) {
     case SMB2_TYPE_LINK:
       type = "LINK";
@@ -438,9 +478,7 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
       type = "UNKNOWN";
       break;
     }
-    
-    // Convert filename from UTF-8 to SJIS for display
-    sjis_name = utf8_to_sjis(ent->name);
+
     printf("  %-30s %-8s %10lu %s\n",
            sjis_name ? sjis_name : ent->name,
            type,
@@ -449,6 +487,10 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
   }
 
   smb2_closedir(smb2, dir);
+
+  if (!found) {
+    printf("No matching files found in '%s'\n", target_path);
+  }
 }
 
 //----------------------------------------------------------------------------
