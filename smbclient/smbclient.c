@@ -72,6 +72,14 @@ static int is_finished = false;
 static pthread_t keepalive_thread;
 static pthread_mutex_t keepalive_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static const struct cmd_table {
+  const char *name;
+  int (*func)();
+  int num_args;
+  const char *option;
+  const char *usage;
+} cmd_table[];
+
 //****************************************************************************
 // Utility routine
 //****************************************************************************
@@ -134,6 +142,27 @@ static int parse_two_args(char *arg_str, char **arg1, char **arg2)
   }
   
   return 1;
+}
+
+//----------------------------------------------------------------------------
+
+static struct cmd_table *find_command(const char *name)
+{
+  struct cmd_table *cmd;
+  for (cmd = (struct cmd_table *)cmd_table; cmd->name != NULL; cmd++) {
+    const char *p = cmd->name;
+    const char *q;
+    while ((q = strchr(p, '|')) != NULL) {
+      if (strncmp(p, name, q - p) == 0 && strlen(name) == (size_t)(q - p)) {
+        return cmd;
+      }
+      p = q + 1;
+    }
+    if (strcmp(p, name) == 0) {
+      return cmd;
+    }
+  }
+  return NULL;
 }
 
 //----------------------------------------------------------------------------
@@ -400,7 +429,7 @@ static const char *format_uint64(uint64_t value)
 // Command implementations
 //****************************************************************************
 
-static void cmd_ls(struct smb2_context *smb2, const char *path)
+static int cmd_ls(struct smb2_context *smb2, const char *path)
 {
   struct smb2dir *dir;
   struct smb2dirent *ent;
@@ -446,7 +475,7 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
   dir = smb2_opendir(smb2, sjis_to_utf8(directory_path + 1));
   if (dir == NULL) {
     printf("Failed to open directory '%s': %s\n", directory_path, smb2_get_error(smb2));
-    return;
+    return 0;
   }
 
   int found = false;
@@ -494,11 +523,12 @@ static void cmd_ls(struct smb2_context *smb2, const char *path)
   if (!found) {
     printf("No matching files found in '%s'\n", target_path);
   }
+  return 0;
 }
 
 //----------------------------------------------------------------------------
 
-static void cmd_cd(struct smb2_context *smb2, const char *path)
+static int cmd_cd(struct smb2_context *smb2, const char *path)
 {
   char *resolved_path;
   struct smb2dir *dir;
@@ -506,7 +536,7 @@ static void cmd_cd(struct smb2_context *smb2, const char *path)
   if (path == NULL || strlen(path) == 0) {
     // No argument - show current directory
     printf("Current directory: %s\n", current_dir);
-    return;
+    return 0;
   }
   
   resolved_path = resolve_path(path);
@@ -515,7 +545,7 @@ static void cmd_cd(struct smb2_context *smb2, const char *path)
   dir = smb2_opendir(smb2, sjis_to_utf8(resolved_path + 1));
   if (dir == NULL) {
     printf("Failed to change directory to '%s': %s\n", resolved_path, smb2_get_error(smb2));
-    return;
+    return 0;
   }
   
   smb2_closedir(smb2, dir);
@@ -530,79 +560,79 @@ static void cmd_cd(struct smb2_context *smb2, const char *path)
   }
   
   printf("Changed directory to: %s\n", current_dir);
+  return 0;
 }
 
 //----------------------------------------------------------------------------
 
-static void cmd_mkdir(struct smb2_context *smb2, const char *path)
+static int cmd_mkdir(struct smb2_context *smb2, const char *path)
 {
   char *target_path;
   
   if (path == NULL || strlen(path) == 0) {
-    printf("Usage: mkdir <path>\n");
-    return;
+    return -1;
   }
   
   target_path = resolve_path(path);
   
   if (smb2_mkdir(smb2, sjis_to_utf8(target_path + 1)) != 0) {
     printf("Failed to create directory '%s': %s\n", target_path, smb2_get_error(smb2));
-    return;
+    return 0;
   }
   
   printf("Directory '%s' created successfully\n", target_path);
+  return 0;
 }
 
 //----------------------------------------------------------------------------
 
-static void cmd_rmdir(struct smb2_context *smb2, const char *path)
+static int cmd_rmdir(struct smb2_context *smb2, const char *path)
 {
   char *target_path;
   
   if (path == NULL || strlen(path) == 0) {
-    printf("Usage: rmdir <path>\n");
-    return;
+    return -1;
   }
   
   target_path = resolve_path(path);
   
   if (smb2_rmdir(smb2, sjis_to_utf8(target_path + 1)) != 0) {
     printf("Failed to remove directory '%s': %s\n", target_path, smb2_get_error(smb2));
-    return;
+    return 0;
   }
   
   printf("Directory '%s' removed successfully\n", target_path);
+  return 0;
 }
 
 //----------------------------------------------------------------------------
 
-static void cmd_rm(struct smb2_context *smb2, const char *path)
+static int cmd_rm(struct smb2_context *smb2, const char *path)
 {
   char *target_path;
   
   if (path == NULL || strlen(path) == 0) {
-    printf("Usage: rm <path>\n");
-    return;
+    return -1;
   }
   
   target_path = resolve_path(path);
   
   if (smb2_unlink(smb2, sjis_to_utf8(target_path + 1)) != 0) {
     printf("Failed to remove file '%s': %s\n", target_path, smb2_get_error(smb2));
-    return;
+    return 0;
   }
   
   printf("File '%s' removed successfully\n", target_path);
+  return 0;
 }
 
 //----------------------------------------------------------------------------
 
-static void cmd_rename(struct smb2_context *smb2, const char *old_path, const char *new_path)
+static int cmd_rename(struct smb2_context *smb2, const char *old_path, const char *new_path)
 {
   if (old_path == NULL || strlen(old_path) == 0 || 
       new_path == NULL || strlen(new_path) == 0) {
-    printf("Usage: rename <old_path> <new_path>\n");
-    return;
+    return -1;
   }
 
   char target_old[PATH_LEN];
@@ -617,30 +647,30 @@ static void cmd_rename(struct smb2_context *smb2, const char *old_path, const ch
 
   if (smb2_rename(smb2, target_old_utf8, target_new_utf8) != 0) {
     printf("Failed to rename '%s' to '%s': %s\n", target_old, target_new, smb2_get_error(smb2));
-    return;
+    return 0;
   }
   
   printf("Renamed '%s' to '%s' successfully\n", target_old, target_new);
+  return 0;
 }
 
 //----------------------------------------------------------------------------
 
-static void cmd_stat(struct smb2_context *smb2, const char *path)
+static int cmd_stat(struct smb2_context *smb2, const char *path)
 {
   char *target_path;
   struct smb2_stat_64 st;
   const char *type;
   
   if (path == NULL || strlen(path) == 0) {
-    printf("Usage: stat <path>\n");
-    return;
+    return -1;
   }
 
   target_path = resolve_path(path);
 
   if (smb2_stat(smb2, sjis_to_utf8(target_path + 1), &st) != 0) {
     printf("Failed to stat '%s': %s\n", target_path, smb2_get_error(smb2));
-    return;
+    return 0;
   }
   
   switch (st.smb2_type) {
@@ -667,11 +697,12 @@ static void cmd_stat(struct smb2_context *smb2, const char *path)
   printf("Modify time: %s\n", format_time(st.smb2_mtime));
   printf("Change time: %s\n", format_time(st.smb2_ctime));
   printf("Birth time:  %s\n", format_time(st.smb2_btime));
+  return 0;
 }
 
 //----------------------------------------------------------------------------
 
-static void cmd_statvfs(struct smb2_context *smb2, const char *path)
+static int cmd_statvfs(struct smb2_context *smb2, const char *path)
 {
   char *target_path;
   struct smb2_statvfs statvfs;
@@ -687,7 +718,7 @@ static void cmd_statvfs(struct smb2_context *smb2, const char *path)
 
   if (smb2_statvfs(smb2, sjis_to_utf8(target_path + 1), &statvfs) != 0) {
     printf("Failed to get filesystem statistics for '%s': %s\n", target_path, smb2_get_error(smb2));
-    return;
+    return 0;
   }
   
   total_space = (uint64_t)statvfs.f_blocks * statvfs.f_bsize;
@@ -703,15 +734,16 @@ static void cmd_statvfs(struct smb2_context *smb2, const char *path)
   printf("Used space:       %s (%s bytes)\n", format_size(used_space), format_uint64(used_space));
   printf("Free space:       %s (%s bytes)\n", format_size(free_space), format_uint64(free_space));
   printf("Usage:            %.1f%%\n", usage_percent);
+  return 0;
 }
 
 //----------------------------------------------------------------------------
 
-static void cmd_lcd(const char *path)
+static int cmd_lcd(struct smb2_context *smb2, const char *path)
 {
   if (path != NULL && chdir(path) != 0) {
     printf("Failed to change local directory to '%s': %s\n", path, strerror(errno));
-    return;
+    return 0;
   }
 
   // No argument - show current local directory
@@ -724,6 +756,7 @@ static void cmd_lcd(const char *path)
   convert_path_separator(local_dir);
 
   printf(path == NULL ? "Current local directory: %s\n" : "Changed local directory to: %s\n", local_dir);
+  return 0;
 }
 
 //----------------------------------------------------------------------------
@@ -894,7 +927,7 @@ static int get_multiple_files(struct smb2_context *smb2, const char *target_remo
   return files_downloaded;
 }
 
-static void cmd_get(struct smb2_context *smb2, const char *remote_path, const char *local_path)
+static int cmd_get(struct smb2_context *smb2, const char *remote_path, const char *local_path)
 {
   char *target_remote;
   const char *target_local;
@@ -902,8 +935,7 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
   struct stat st;
 
   if (remote_path == NULL || strlen(remote_path) == 0) {
-    printf("Usage: get <remote_path> [local_path]\n");
-    return;
+    return -1;
   }
   
   target_remote = resolve_path(remote_path);
@@ -934,16 +966,16 @@ static void cmd_get(struct smb2_context *smb2, const char *remote_path, const ch
   }
 
   get_one_file(smb2, target_remote, target_local);
+  return 0;
 }
 
-static void cmd_mget(struct smb2_context *smb2, const char *remote_path, const char *local_path)
+static int cmd_mget(struct smb2_context *smb2, const char *remote_path, const char *local_path)
 {
   char *target_remote;
   struct stat st;
 
   if (remote_path == NULL || strlen(remote_path) == 0) {
-    printf("Usage: mget <remote_path> [local_path]\n");
-    return;
+    return -1;
   }
   
   if (local_path == NULL || strlen(local_path) == 0) {
@@ -956,7 +988,7 @@ static void cmd_mget(struct smb2_context *smb2, const char *remote_path, const c
         strcmp(local_path, "..") == 0 ||
         (stat(local_path, &st) == 0 && S_ISDIR(st.st_mode)))) {
     printf("Local path '%s' is not a directory\n", local_path);
-    return;
+    return 0;
   }
 
   int files_downloaded = get_multiple_files(smb2, target_remote, local_path);
@@ -966,6 +998,7 @@ static void cmd_mget(struct smb2_context *smb2, const char *remote_path, const c
   } else {
     printf("Downloaded %d file(s)\n", files_downloaded);
   }
+  return 0;
 }
 
 //----------------------------------------------------------------------------
@@ -1136,7 +1169,7 @@ static int put_multiple_files(struct smb2_context *smb2, const char *target_loca
   return files_uploaded;
 }
 
-static void cmd_put(struct smb2_context *smb2, const char *local_path, const char *remote_path)
+static int cmd_put(struct smb2_context *smb2, const char *local_path, const char *remote_path)
 {
   const char *target_local;
   char *target_remote;
@@ -1144,8 +1177,7 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
   struct smb2_stat_64 remote_st;
   
   if (local_path == NULL || strlen(local_path) == 0) {
-    printf("Usage: put <local_path> [remote_path]\n");
-    return;
+    return -1;
   }
   
   target_local = local_path;
@@ -1176,16 +1208,16 @@ static void cmd_put(struct smb2_context *smb2, const char *local_path, const cha
   }
 
   put_one_file(smb2, target_local, target_remote);
+  return 0;
 }
 
-static void cmd_mput(struct smb2_context *smb2, const char *local_path, const char *remote_path)
+static int cmd_mput(struct smb2_context *smb2, const char *local_path, const char *remote_path)
 {
   char *target_remote;
   struct smb2_stat_64 remote_st;
   
   if (local_path == NULL || strlen(local_path) == 0) {
-    printf("Usage: mput <local_path> [remote_path]\n");
-    return;
+    return -1;
   }
   
   if (remote_path == NULL || strlen(remote_path) == 0) {
@@ -1197,7 +1229,7 @@ static void cmd_mput(struct smb2_context *smb2, const char *local_path, const ch
   if (!(smb2_stat(smb2, sjis_to_utf8(target_remote + 1), &remote_st) == 0 && 
         remote_st.smb2_type == SMB2_TYPE_DIRECTORY)) {
     printf("Remote path '%s' is not a directory\n", target_remote);
-    return;
+    return 0;
   }
 
   int files_uploaded = put_multiple_files(smb2, local_path, target_remote);
@@ -1207,9 +1239,52 @@ static void cmd_mput(struct smb2_context *smb2, const char *local_path, const ch
   } else {
     printf("Uploaded %d file(s)\n", files_uploaded);
   }
+  return 0;
 }
 
 //----------------------------------------------------------------------------
+
+static int cmd_help(struct smb2_context *smb2, const char *command)
+{
+  struct cmd_table *cmd;
+  
+  if (command != NULL && (cmd = find_command(command)) != NULL) {
+    printf("使用法: %s %s  -- %s\n", command, cmd->option, cmd->usage);
+  } else {
+    for (cmd = (struct cmd_table *)cmd_table; cmd->name != NULL; cmd++) {
+      printf("%-15s %s\n", cmd->name, cmd->usage);
+    }
+  }
+  return 0;
+}
+
+static int cmd_shell(struct smb2_context *smb2, const char *command)
+{
+  system(command ? command : "");
+  return 0;
+}
+
+//----------------------------------------------------------------------------
+
+static const struct cmd_table cmd_table[] = {
+  {"ls|dir|l",    cmd_ls,      1, "[path]",                     "ディレクトリ内容の表示"},
+  {"cd|chdir",    cmd_cd,      1, "[path]",                     "カレントディレクトリの変更/表示"},
+  {"mkdir|md",    cmd_mkdir,   1, "<path>",                     "ディレクトリの作成"},
+  {"rmdir|rd",    cmd_rmdir,   1, "<path>",                     "ディレクトリの削除"},
+  {"rm|del",      cmd_rm,      1, "<path>",                     "ファイルの削除"},
+  {"rename|ren",  cmd_rename,  2, "<old_path> <new_path>",      "ファイル/ディレクトリの名前変更"},
+  {"stat",        cmd_stat,    1, "<path>",                     "ファイル/ディレクトリ情報の表示"},
+  {"statvfs|du",  cmd_statvfs, 1, "[path]",                     "ファイルシステム情報の表示"},
+  {"lcd",         cmd_lcd,     1, "[path]",                     "ローカルカレントディレクトリの変更/表示"},
+  {"shell",       cmd_shell,   1, "[shell command]",            "シェルコマンドの実行"},
+  {"get",         cmd_get,     2, "<remote_path> [local_path]", "リモートファイルのダウンロード"},
+  {"mget",        cmd_mget,    2, "<remote_path> [local_path]", "複数リモートファイルのダウンロード"},
+  {"put",         cmd_put,     2, "<local_path> [remote_path]", "ローカルファイルのアップロード"},
+  {"mput",        cmd_mput,    2, "<local_path> [remote_path]", "複数ローカルファイルのアップロード"},
+  {"quit|exit",   NULL,        0, "",                           "プログラムの終了"},
+  {"help",        cmd_help,    0, "[command]",                  "ヘルプの表示"},
+  {NULL,          NULL,        0, NULL,                         NULL}
+};
 
 static int execute_command(struct smb2_context *smb2, char *cmdline)
 {
@@ -1221,10 +1296,13 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
   }
 
   // Parse command and argument
+  arg = cmdline + 1;
   if (cmdline[0] == '!') {
-    // Shell command
     cmd = "shell";
-    arg = cmdline + 1;
+  } else if (cmdline[0] == '?') {
+    cmd = "help";
+  } else if (cmdline[0] == '\x1a') {
+    cmd = "quit";
   } else {
     cmd = strtok(cmdline, " \t");
     arg = strtok(NULL, "");  // Get rest of line as argument
@@ -1234,66 +1312,30 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
   if (cmd == NULL) {
     return 0;
   }
-  
-  if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0 || cmd[0] == '\x1a') {
+
+  // Find command in table
+  struct cmd_table *c = find_command(cmd);
+  int res;
+  if (c == NULL) {
+    printf("Unknown command: %s\n", cmd);
+    printf("Type 'help' for available commands\n");
+    return -1; // Unknown command
+  }
+
+  // Execute command
+  if (c->func == NULL) {
     return 1;  // Signal to exit
-  } else if (strcmp(cmd, "help") == 0) {
-    printf("Available commands:\n");
-    printf("  ls [path]     - List directory contents (current dir if no path)\n");
-    printf("  cd <path>     - Change directory\n");
-    printf("  cd            - Show current directory\n");
-    printf("  mkdir <path>  - Create directory\n");
-    printf("  rmdir <path>  - Remove empty directory\n");
-    printf("  rm <path>     - Remove file\n");
-    printf("  rename <old> <new> - Rename file or directory\n");
-    printf("  stat <path>   - Show file/directory information\n");
-    printf("  statvfs [path]- Show filesystem statistics\n");
-    printf("  get <remote> [local] - Download file from server\n");
-    printf("  put <local> [remote] - Upload file to server\n");
-    printf("  mget <remote> [local] - Download multiple files from server\n");
-    printf("  mput <local> [remote] - Upload multiple files to server\n");
-    printf("  lcd [path]    - Change local directory\n");
-    printf("  shell [command] - Execute shell command\n");
-    printf("  quit/exit     - Exit the program\n");
-    printf("  help          - Show this help\n");
-  } else if (strcmp(cmd, "ls") == 0 || strcmp(cmd, "dir") == 0 || strcmp(cmd, "l") == 0) {
-    cmd_ls(smb2, arg);  // arg can be NULL for current directory
-  } else if (strcmp(cmd, "cd") == 0 || strcmp(cmd, "chdir") == 0) {
-    cmd_cd(smb2, arg);  // arg can be NULL to show current directory
-  } else if (strcmp(cmd, "mkdir") == 0 || strcmp(cmd, "md") == 0) {
-    cmd_mkdir(smb2, arg);
-  } else if (strcmp(cmd, "rmdir") == 0 || strcmp(cmd, "rd") == 0) {
-    cmd_rmdir(smb2, arg);
-  } else if (strcmp(cmd, "rm") == 0 || strcmp(cmd, "del") == 0) {
-    cmd_rm(smb2, arg);
-  } else if (strcmp(cmd, "stat") == 0) {
-    cmd_stat(smb2, arg);
-  } else if (strcmp(cmd, "statvfs") == 0) {
-    cmd_statvfs(smb2, arg);  // arg can be NULL for current directory
-  } else if (strcmp(cmd, "lcd") == 0) {
-    cmd_lcd(arg);  // arg can be NULL to show current local directory
-  } else if (strcmp(cmd, "shell") == 0) {
-    system(arg ? arg : "");
+  } else if (c->num_args < 2) {
+    res = c->func(smb2, arg);
   } else {
     char *arg1 = NULL, *arg2 = NULL;
     parse_two_args(arg, &arg1, &arg2);
-    if (strcmp(cmd, "get") == 0) {
-      cmd_get(smb2, arg1, arg2);
-    } else if (strcmp(cmd, "mget") == 0) {
-      cmd_mget(smb2, arg1, arg2);
-    } else if (strcmp(cmd, "put") == 0) {
-      cmd_put(smb2, arg1, arg2);
-    } else if (strcmp(cmd, "mput") == 0) {
-      cmd_mput(smb2, arg1, arg2);
-    } else if (strcmp(cmd, "rename") == 0 || strcmp(cmd, "ren") == 0) {
-      cmd_rename(smb2, arg1, arg2);
-    } else {
-      printf("Unknown command: %s\n", cmd);
-      printf("Type 'help' for available commands\n");
-      return -1; // Unknown command
-    }
+    res = c->func(smb2, arg1, arg2);
   }
 
+  if (res < 0) {
+    cmd_help(smb2, cmd);
+  }
   return 0;  // Continue execution
 }
 
@@ -1535,6 +1577,7 @@ static char* normalize_smb_url(const char *input_url)
 static void usage(void)
 {
   fprintf(stderr, "%s",
+    "smbclient for X68000 version " GIT_REPO_VERSION "\n\n"
     "Usage:\n"
     "smbclient <smb2-url> [options]\n"
     "  Options:\n"
