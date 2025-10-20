@@ -45,6 +45,7 @@
 #include <smb2.h>
 #include <libsmb2.h>
 #include <libsmb2-raw.h>
+#include <libsmb2-private.h>
 #include "iconv_mini.h"
 
 //****************************************************************************
@@ -1366,6 +1367,54 @@ static void* keepalive_thread_func(void *arg)
 // Main program
 //****************************************************************************
 
+char *getpass(const char *prompt)
+{
+  static char password[32];
+  char *p = password;
+
+  printf("%s", prompt);
+  fflush(stdout);
+  while (1) {
+    int ch = _iocs_b_keyinp() & 0xff;
+    switch (ch) {
+    case '\0':
+      continue;
+    case '\r':
+    case '\n':
+      *p = '\0';
+      printf("\n");
+      return password;
+    case '\b':
+      if (p > password) {
+        p--;
+        printf("\b \b");
+        fflush(stdout);
+      }
+      break;
+    case '\x03':  // Ctrl-C
+    case '\x1b':  // ESC
+      printf("\n");
+      return NULL;
+    case '\x17':  // Ctrl-W
+    case '\x15':  // Ctrl-U
+      while (p > password && *(p - 1) != ' ') {
+        p--;
+        printf("\b \b");
+        fflush(stdout);
+      }
+      break;
+    default:
+      if (p - password < sizeof(password) - 1 &&
+          ch >= 32 && ch <= 126) {
+        *p++ = (char)ch;
+        printf("*");
+        fflush(stdout);
+      }
+      break;
+    }
+  }
+}
+
 static char* normalize_smb_url(const char *input_url)
 {
   static char normalized_url[PATH_LEN];
@@ -1496,6 +1545,20 @@ int main(int argc, char *argv[])
   if (url == NULL) {
     fprintf(stderr, "Failed to parse url: %s\n", smb2_get_error(smb2));
     exit(1);
+  }
+
+  if (url->user) {
+    smb2_set_user(smb2, url->user);
+  }
+  if (smb2->password == NULL) {
+    printf("Password for %s: ", smb2->user);
+    char *password = getpass("");
+    if (password == NULL) {
+      smb2_destroy_url(url);
+      smb2_destroy_context(smb2);
+      exit(1);
+    }
+    smb2_set_password(smb2, password);
   }
 
   // For list mode, we only need to connect to IPC$ and enumerate shares
