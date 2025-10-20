@@ -615,10 +615,20 @@ static void cmd_statvfs(struct smb2_context *smb2, const char *path)
 
 static void cmd_lcd(const char *path)
 {
-  if (chdir(path ? path : "") != 0) {
+  if (path != NULL && chdir(path) != 0) {
     printf("Failed to change local directory to '%s': %s\n", path, strerror(errno));
     return;
   }
+
+  // No argument - show current local directory
+  char local_dir[PATH_LEN];
+  int curdrv = _dos_curdrv();
+  local_dir[0] = 'A' + curdrv;
+  local_dir[1] = ':';
+  local_dir[2] = '\\';
+  _dos_curdir(curdrv + 1, &local_dir[3]);
+
+  printf(path == NULL ? "Current local directory: %s\n" : "Changed local directory to: %s\n", local_dir);
 }
 
 //----------------------------------------------------------------------------
