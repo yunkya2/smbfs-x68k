@@ -1458,18 +1458,16 @@ static char* normalize_smb_url(const char *input_url)
 
 static void usage(void)
 {
-  fprintf(stderr, "Usage:\n");
-  fprintf(stderr, "smbclient <smb2-url>                  - Interactive mode\n");
-  fprintf(stderr, "smbclient -L <smb2-url>               - List available services\n");
-  fprintf(stderr, "smbclient <smb2-url> -c \"<commands>\"   - Execute commands\n\n");
-  fprintf(stderr, "URL format: \n");
-  fprintf(stderr, "  [smb://][<domain;][<username>@]<host>[:<port>][/<share>/<path>]\n");
-  fprintf(stderr, "\nCommands can be separated by semicolons (;)\n");
-  fprintf(stderr, "Examples:\n");
-  fprintf(stderr, "  smbclient server/share\n");
-  fprintf(stderr, "  smbclient //server/share\n");
-  fprintf(stderr, "  smbclient smb://server/share\n");
-  fprintf(stderr, "  smbclient server/share -c \"ls; cd dir; ls\"\n");
+  fprintf(stderr, "%s",
+    "Usage:\n"
+    "smbclient <smb2-url> [options]\n"
+    "  Options:\n"
+    "    -U <username[%password]>   - Specify username and optional password\n"
+    "    -L                         - List available services on the server\n"
+    "    -c \"<commands>\"            - Execute commands separated by semicolons (;)\n\n"
+    "  URL format:\n"
+    "    [smb://][<domain;][<username>@]<host>[:<port>][/<share>/<path>]\n"
+  );
 }
 
 int main(int argc, char *argv[])
@@ -1479,6 +1477,8 @@ int main(int argc, char *argv[])
   int list_mode = 0;
   int command_mode = 0;
   int url_index = 0;
+  char *username = NULL;
+  char *password = NULL;
   char *command_string = NULL;
 
   // Parse command line options
@@ -1490,6 +1490,19 @@ int main(int argc, char *argv[])
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-L") == 0) {
       list_mode = 1;
+    } else if (strcmp(argv[i], "-U") == 0) {
+      if (i + 1 < argc) {
+        username = argv[++i];
+        if ((password = strchr(username, '%')) != NULL) {
+          *password++ = '\0';  // Split username and password
+          if (*username == '\0') {
+            username = NULL;  // Empty username
+          }
+        }
+      } else {
+        usage();
+        exit(1);
+      }
     } else if (strcmp(argv[i], "-c") == 0) {
       command_mode = 1;
       int command_len = 1;
@@ -1547,10 +1560,17 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
-  if (url->user) {
+  // Set username and password
+  if (url->user) {                // Username is specified in URL
     smb2_set_user(smb2, url->user);
   }
-  if (smb2->password == NULL) {
+  if (username) {                 // Username is specified in command line (-U)
+    smb2_set_user(smb2, username);
+  }
+  if (password) {                 // Password is specified in command line (-U)
+    smb2_set_password(smb2, password);
+  }
+  if (smb2->password == NULL) {   // Password is not specified yet
     printf("Password for %s: ", smb2->user);
     char *password = getpass("");
     if (password == NULL) {
