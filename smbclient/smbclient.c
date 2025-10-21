@@ -474,7 +474,7 @@ static int cmd_ls(struct smb2_context *smb2, const char *path)
 
   dir = smb2_opendir(smb2, sjis_to_utf8(directory_path + 1));
   if (dir == NULL) {
-    printf("Failed to open directory '%s': %s\n", directory_path, smb2_get_error(smb2));
+    printf("ディレクトリ '%s'を開けません: %s\n", directory_path, smb2_get_error(smb2));
     return 0;
   }
 
@@ -521,7 +521,7 @@ static int cmd_ls(struct smb2_context *smb2, const char *path)
   smb2_closedir(smb2, dir);
 
   if (!found) {
-    printf("No matching files found in '%s'\n", target_path);
+    printf("ファイルがありません\n");
   }
   return 0;
 }
@@ -535,7 +535,7 @@ static int cmd_cd(struct smb2_context *smb2, const char *path)
   
   if (path == NULL || strlen(path) == 0) {
     // No argument - show current directory
-    printf("Current directory: %s\n", current_dir);
+    printf("%s\n", current_dir);
     return 0;
   }
   
@@ -544,7 +544,7 @@ static int cmd_cd(struct smb2_context *smb2, const char *path)
   // Test if the directory exists by trying to open it
   dir = smb2_opendir(smb2, sjis_to_utf8(resolved_path + 1));
   if (dir == NULL) {
-    printf("Failed to change directory to '%s': %s\n", resolved_path, smb2_get_error(smb2));
+    printf("ディレクトリ '%s' に移動できません: %s\n", resolved_path, smb2_get_error(smb2));
     return 0;
   }
   
@@ -559,7 +559,7 @@ static int cmd_cd(struct smb2_context *smb2, const char *path)
     current_dir[len-1] = '\0';
   }
   
-  printf("Changed directory to: %s\n", current_dir);
+  printf("ディレクトリ '%s' に移動しました\n", current_dir);
   return 0;
 }
 
@@ -576,11 +576,11 @@ static int cmd_mkdir(struct smb2_context *smb2, const char *path)
   target_path = resolve_path(path);
   
   if (smb2_mkdir(smb2, sjis_to_utf8(target_path + 1)) != 0) {
-    printf("Failed to create directory '%s': %s\n", target_path, smb2_get_error(smb2));
+    printf("ディレクトリ '%s' を作成できません: %s\n", target_path, smb2_get_error(smb2));
     return 0;
   }
   
-  printf("Directory '%s' created successfully\n", target_path);
+  printf("ディレクトリ '%s' を作成しました\n", target_path);
   return 0;
 }
 
@@ -597,11 +597,11 @@ static int cmd_rmdir(struct smb2_context *smb2, const char *path)
   target_path = resolve_path(path);
   
   if (smb2_rmdir(smb2, sjis_to_utf8(target_path + 1)) != 0) {
-    printf("Failed to remove directory '%s': %s\n", target_path, smb2_get_error(smb2));
+    printf("ディレクトリ '%s' を削除できません: %s\n", target_path, smb2_get_error(smb2));
     return 0;
   }
   
-  printf("Directory '%s' removed successfully\n", target_path);
+  printf("ディレクトリ '%s' を削除しました\n", target_path);
   return 0;
 }
 
@@ -618,11 +618,11 @@ static int cmd_rm(struct smb2_context *smb2, const char *path)
   target_path = resolve_path(path);
   
   if (smb2_unlink(smb2, sjis_to_utf8(target_path + 1)) != 0) {
-    printf("Failed to remove file '%s': %s\n", target_path, smb2_get_error(smb2));
+    printf("ファイル '%s' を削除できません: %s\n", target_path, smb2_get_error(smb2));
     return 0;
   }
   
-  printf("File '%s' removed successfully\n", target_path);
+  printf("ファイル '%s' を削除しました\n", target_path);
   return 0;
 }
 
@@ -646,11 +646,11 @@ static int cmd_rename(struct smb2_context *smb2, const char *old_path, const cha
   strcpy(target_new_utf8, sjis_to_utf8(target_new + 1));
 
   if (smb2_rename(smb2, target_old_utf8, target_new_utf8) != 0) {
-    printf("Failed to rename '%s' to '%s': %s\n", target_old, target_new, smb2_get_error(smb2));
+    printf("ファイル名 '%s' を '%s' に変更できません: %s\n", target_old, target_new, smb2_get_error(smb2));
     return 0;
   }
   
-  printf("Renamed '%s' to '%s' successfully\n", target_old, target_new);
+  printf("ファイル名 '%s' を '%s' に変更しました\n", target_old, target_new);
   return 0;
 }
 
@@ -669,7 +669,7 @@ static int cmd_stat(struct smb2_context *smb2, const char *path)
   target_path = resolve_path(path);
 
   if (smb2_stat(smb2, sjis_to_utf8(target_path + 1), &st) != 0) {
-    printf("Failed to stat '%s': %s\n", target_path, smb2_get_error(smb2));
+    printf("ファイル '%s' の情報を取得できません: %s\n", target_path, smb2_get_error(smb2));
     return 0;
   }
   
@@ -717,7 +717,7 @@ static int cmd_statvfs(struct smb2_context *smb2, const char *path)
   }
 
   if (smb2_statvfs(smb2, sjis_to_utf8(target_path + 1), &statvfs) != 0) {
-    printf("Failed to get filesystem statistics for '%s': %s\n", target_path, smb2_get_error(smb2));
+    printf("ファイルシステム '%s' の情報を取得できません: %s\n", target_path, smb2_get_error(smb2));
     return 0;
   }
   
@@ -742,7 +742,7 @@ static int cmd_statvfs(struct smb2_context *smb2, const char *path)
 static int cmd_lcd(struct smb2_context *smb2, const char *path)
 {
   if (path != NULL && chdir(path) != 0) {
-    printf("Failed to change local directory to '%s': %s\n", path, strerror(errno));
+    printf("ローカルディレクトリ '%s' に移動できません: %s\n", path, strerror(errno));
     return 0;
   }
 
@@ -755,7 +755,7 @@ static int cmd_lcd(struct smb2_context *smb2, const char *path)
   _dos_curdir(curdrv + 1, &local_dir[3]);
   convert_path_separator(local_dir);
 
-  printf(path == NULL ? "Current local directory: %s\n" : "Changed local directory to: %s\n", local_dir);
+  printf(path == NULL ? "%s\n" : "ローカルディレクトリ '%s' に移動しました\n", local_dir);
   return 0;
 }
 
@@ -772,31 +772,31 @@ static int get_one_file(struct smb2_context *smb2, const char *target_remote, co
   // Open remote file for reading
   fh = smb2_open(smb2, sjis_to_utf8(target_remote + 1), O_RDONLY);
   if (fh == NULL) {
-    printf("Failed to open remote file '%s': %s\n", target_remote, smb2_get_error(smb2));
+    printf("リモートファイル '%s' を開けません: %s\n", target_remote, smb2_get_error(smb2));
     return -1;
   }
   
   // Open local file for writing
   local_fd = open(target_local, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
   if (local_fd < 0) {
-    printf("Failed to create local file '%s': %s\n", target_local, strerror(errno));
+    printf("ローカルファイル '%s' を作成できません: %s\n", target_local, strerror(errno));
     smb2_close(smb2, fh);
     return -1;
   }
   
-  printf("Downloading '%s' to '%s'\n", target_remote, target_local);
+  printf("ファイル '%s' を '%s' にダウンロードします\n", target_remote, target_local);
   
   // Copy data
   while ((bytes_read = smb2_read(smb2, fh, buffer, sizeof(buffer))) > 0) {
     bytes_written = write(local_fd, buffer, bytes_read);
     if (bytes_written != bytes_read) {
-      printf("Failed to write to local file: %s\n", strerror(errno));
+      printf("ローカルファイルに書き込めません: %s\n", strerror(errno));
       break;
     }
   }
   
   if (bytes_read < 0) {
-    printf("Failed to read from remote file: %s\n", smb2_get_error(smb2));
+    printf("リモートファイルを読み込めません: %s\n", smb2_get_error(smb2));
     close(local_fd);
     smb2_close(smb2, fh);
     return -1;
@@ -864,7 +864,7 @@ static int get_multiple_files(struct smb2_context *smb2, const char *target_remo
 
   dir = smb2_opendir(smb2, sjis_to_utf8(directory_path + 1));
   if (dir == NULL) {
-    printf("Failed to open remote directory '%s': %s\n", directory_path, smb2_get_error(smb2));
+    printf("リモートディレクトリ '%s' を開けません: %s\n", directory_path, smb2_get_error(smb2));
     return -1;
   }
 
@@ -906,7 +906,7 @@ static int get_multiple_files(struct smb2_context *smb2, const char *target_remo
           // Continue anyway -- directory might already exist
         } else
 #endif
-        printf("Created local directory '%s'\n", local_path);
+        printf("ローカルディレクトリ '%s' を作成しました\n", local_path);
 
         // Process both files and directories through get_multiple_files
         sub_files = get_multiple_files(smb2, remote_path, local_path);
@@ -987,16 +987,16 @@ static int cmd_mget(struct smb2_context *smb2, const char *remote_path, const ch
   if (!(strcmp(local_path, ".") == 0 ||
         strcmp(local_path, "..") == 0 ||
         (stat(local_path, &st) == 0 && S_ISDIR(st.st_mode)))) {
-    printf("Local path '%s' is not a directory\n", local_path);
+    printf("ローカルパス '%s' はディレクトリではありません\n", local_path);
     return 0;
   }
 
   int files_downloaded = get_multiple_files(smb2, target_remote, local_path);
   
   if (files_downloaded < 0) {
-    printf("Error occurred during multiple file download\n");
+    printf("ファイルのダウンロード中にエラーが発生しました\n");
   } else {
-    printf("Downloaded %d file(s)\n", files_downloaded);
+    printf("%d 個のファイルをダウンロードしました\n", files_downloaded);
   }
   return 0;
 }
@@ -1014,31 +1014,31 @@ static int put_one_file(struct smb2_context *smb2, const char *target_local, con
   // Open local file for reading
   local_fd = open(target_local, O_RDONLY | O_BINARY);
   if (local_fd < 0) {
-    printf("Failed to open local file '%s': %s\n", target_local, strerror(errno));
+    printf("ローカルファイル '%s' を開けません: %s\n", target_local, strerror(errno));
     return -1;
   }
   
   // Open remote file for writing
   fh = smb2_open(smb2, sjis_to_utf8(target_remote + 1), O_WRONLY | O_CREAT | O_TRUNC);
   if (fh == NULL) {
-    printf("Failed to create remote file '%s': %s\n", target_remote, smb2_get_error(smb2));
+    printf("リモートファイル '%s' を作成できません: %s\n", target_remote, smb2_get_error(smb2));
     close(local_fd);
     return -1;
   }
   
-  printf("Uploading '%s' to '%s'\n", target_local, target_remote);
+  printf("ファイル '%s' を '%s' にアップロードします\n", target_local, target_remote);
   
   // Copy data
   while ((bytes_read = read(local_fd, buffer, sizeof(buffer))) > 0) {
     bytes_written = smb2_write(smb2, fh, buffer, bytes_read);
     if (bytes_written != bytes_read) {
-      printf("Failed to write to remote file: %s\n", smb2_get_error(smb2));
+      printf("リモートファイルに書き込めません: %s\n", smb2_get_error(smb2));
       break;
     }
   }
   
   if (bytes_read < 0) {
-    printf("Failed to read from local file: %s\n", strerror(errno));
+    printf("ローカルファイルを読み込めません: %s\n", strerror(errno));
     close(local_fd);
     smb2_close(smb2, fh);
     return -1;
@@ -1110,7 +1110,7 @@ static int put_multiple_files(struct smb2_context *smb2, const char *target_loca
 
   dir = opendir(directory_path);
   if (dir == NULL) {
-    printf("Failed to open local directory '%s': %s\n", directory_path, strerror(errno));
+    printf("ローカルディレクトリ '%s' を開けません: %s\n", directory_path, strerror(errno));
     return -1;
   }
 
@@ -1146,7 +1146,7 @@ static int put_multiple_files(struct smb2_context *smb2, const char *target_loca
           // Continue anyway - directory might already exist
         } else
 #endif
-        printf("Created remote directory '%s'\n", remote_path);
+        printf("リモートディレクトリ '%s' を作成しました\n", remote_path);
 
         // Process both files and directories through put_multiple_files
         sub_files = put_multiple_files(smb2, local_path, remote_path);
@@ -1228,16 +1228,16 @@ static int cmd_mput(struct smb2_context *smb2, const char *local_path, const cha
   // Check if remote path is a directory
   if (!(smb2_stat(smb2, sjis_to_utf8(target_remote + 1), &remote_st) == 0 && 
         remote_st.smb2_type == SMB2_TYPE_DIRECTORY)) {
-    printf("Remote path '%s' is not a directory\n", target_remote);
+    printf("リモートパス '%s' はディレクトリではありません\n", target_remote);
     return 0;
   }
 
   int files_uploaded = put_multiple_files(smb2, local_path, target_remote);
   
   if (files_uploaded < 0) {
-    printf("Error occurred during multiple file upload\n");
+    printf("ファイルのアップロード中にエラーが発生しました\n");
   } else {
-    printf("Uploaded %d file(s)\n", files_uploaded);
+    printf("%d 個のファイルをアップロードしました\n", files_uploaded);
   }
   return 0;
 }
@@ -1274,7 +1274,7 @@ static const struct cmd_table cmd_table[] = {
   {"rm|del",      cmd_rm,      1, "<path>",                     "ファイルの削除"},
   {"rename|ren",  cmd_rename,  2, "<old_path> <new_path>",      "ファイル/ディレクトリの名前変更"},
   {"stat",        cmd_stat,    1, "<path>",                     "ファイル/ディレクトリ情報の表示"},
-  {"statvfs|du",  cmd_statvfs, 1, "[path]",                     "ファイルシステム情報の表示"},
+  {"statvfs|df",  cmd_statvfs, 1, "[path]",                     "ファイルシステム情報の表示"},
   {"lcd",         cmd_lcd,     1, "[path]",                     "ローカルカレントディレクトリの変更/表示"},
   {"shell",       cmd_shell,   1, "[shell command]",            "シェルコマンドの実行"},
   {"get",         cmd_get,     2, "<remote_path> [local_path]", "リモートファイルのダウンロード"},
@@ -1317,8 +1317,8 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
   struct cmd_table *c = find_command(cmd);
   int res;
   if (c == NULL) {
-    printf("Unknown command: %s\n", cmd);
-    printf("Type 'help' for available commands\n");
+    printf("コマンドが違います: %s\n", cmd);
+    printf("'help' でコマンド一覧が表示されます\n");
     return -1; // Unknown command
   }
 
@@ -1382,13 +1382,13 @@ static void share_enum_cb(struct smb2_context *smb2, int status,
   int i;
 
   if (status) {
-    printf("Failed to enumerate shares (%s) %s\n",
+    printf("ファイル共有一覧の取得でエラーが発生しました (%s) %s\n",
            strerror(-status), smb2_get_error(smb2));
     is_finished = true;
     return;
   }
 
-  printf("Available services on the server:\n");
+  printf("利用可能なファイル共有:\n");
   printf("%-20s %-10s %s\n", "Share name", "Type", "Comment");
   printf("%-20s %-10s %s\n", "----------", "----", "-------");
 
@@ -1439,12 +1439,12 @@ static int list_shares(struct smb2_context *smb2, const char *server, const char
   smb2_set_security_mode(smb2, SMB2_NEGOTIATE_SIGNING_ENABLED);
 
   if (smb2_connect_share(smb2, server, "IPC$", NULL) < 0) {
-    printf("Failed to connect to IPC$ on %s: %s\n", server, smb2_get_error(smb2));
+    printf("サーバ %s の IPC$ に接続できません: %s\n", server, smb2_get_error(smb2));
     return 1;
   }
 
   if (smb2_share_enum_async(smb2, SHARE_INFO_1, share_enum_cb, NULL) != 0) {
-    printf("Failed to start share enumeration: %s\n", smb2_get_error(smb2));
+    printf("ファイル共有一覧を取得できません: %s\n", smb2_get_error(smb2));
     return 1;
   }
 
@@ -1578,15 +1578,14 @@ static void usage(void)
 {
   fprintf(stderr, "%s",
     "smbclient for X68000 version " GIT_REPO_VERSION "\n\n"
-    "Usage:\n"
-    "smbclient <smb2-url> [options]\n"
-    "  Options:\n"
-    "    -U <username[%password]>   - Specify username and optional password\n"
-    "    -L                         - List available services on the server\n"
-    "    -c \"<commands>\"            - Execute commands separated by semicolons (;)\n\n"
-    "  URL format:\n"
-    "    [smb://][<domain;][<username>@]<host>[:<port>][/<share>/<path>]\n\n"
-    "  NTLM_USER_FILE environment variable can also be used to specify credentials\n"
+    "使用法: smbclient <smb2-url> [options]\n"
+    "オプション:\n"
+    "    -U <username[%password]>   - 接続時のユーザ名とパスワードを指定\n"
+    "    -L                         - サーバで利用可能なファイル共有一覧を表示\n"
+    "    -c <commands>...           - コマンドを実行 (;で区切って複数指定可能)\n\n"
+    "URL フォーマット:\n"
+    "    [smb://][<domain>;][<username>@]<host>[:<port>][/<share>]\n\n"
+    "環境変数 NTLM_USER_FILE で指定したファイルがユーザ情報に使用されます\n"
   );
 }
 
@@ -1661,7 +1660,7 @@ int main(int argc, char *argv[])
   // Check whether TCP/IP is available
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) {
-    fprintf(stderr, "TCP/IP socket creation failed\n");
+    fprintf(stderr, "TCP/IP ドライバが常駐していません\n");
     exit(1);
   }
   close(fd);
@@ -1681,7 +1680,7 @@ int main(int argc, char *argv[])
 
   url = smb2_parse_url(smb2, normalized_url);
   if (url == NULL) {
-    fprintf(stderr, "Failed to parse url: %s\n", smb2_get_error(smb2));
+    fprintf(stderr, "URL 指定に誤りがあります: %s\n", smb2_get_error(smb2));
     exit(1);
   }
 
@@ -1696,7 +1695,7 @@ int main(int argc, char *argv[])
     smb2_set_password(smb2, password);
   }
   if (smb2->password == NULL) {   // Password is not specified yet
-    printf("Password for %s: ", smb2->user);
+    printf("ユーザ名 %s のパスワードを入力: ", smb2->user);
     char *password = getpass("");
     if (password == NULL) {
       smb2_destroy_url(url);
@@ -1716,7 +1715,7 @@ int main(int argc, char *argv[])
 
   smb2_set_security_mode(smb2, SMB2_NEGOTIATE_SIGNING_ENABLED);
   if (smb2_connect_share(smb2, url->server, url->share, url->user) != 0) {
-    printf("smb2_connect_share failed. %s\n", smb2_get_error(smb2));
+    printf("ファイル共有サーバへの接続に失敗しました: %s\n", smb2_get_error(smb2));
     exit(1);
   }
   smb2_destroy_url(url);
