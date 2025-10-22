@@ -1295,6 +1295,8 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
     return 0;
   }
 
+  convert_path_separator(cmdline);
+
   // Parse command and argument
   arg = cmdline + 1;
   if (cmdline[0] == '!') {
@@ -1671,6 +1673,7 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
+  convert_path_separator(argv[url_index]);
   char *normalized_url = normalize_smb_url(argv[url_index]);
 
   // Debug: show URL conversion if input was modified
