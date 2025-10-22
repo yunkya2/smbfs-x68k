@@ -1,2 +1,7 @@
 *.o
 *.d
+*.x
+*.elf
+*.map
+*.zip
+README.txt
