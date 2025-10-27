@@ -1,3 +1,6 @@
 [submodule "libsmb2"]
 	path = libsmb2
 	url = https://github.com/yunkya2/libsmb2.git
+[submodule "iconv_mini"]
+	path = iconv_mini
+	url = https://github.com/yunkya2/iconv_mini.git

@@ -36,7 +36,7 @@ ASFLAGS = -I. -MMD -MP
 LDFLAGS = -lsocket -lpthread
 LDFLAGS += -Wl,-Map,$(@:.x=.map)
 
-INC += -I. -I../include -I../iconv/
+INC += -I. -I../include -I../iconv_mini/
 INC += -I../libsmb2/include -I../libsmb2/include/smb2
 DEFS +=
 
@@ -62,7 +62,7 @@ FORCE:
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-%.o: ../iconv/%.c
+%.o: ../iconv_mini/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 %.o: %.S
