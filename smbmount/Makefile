@@ -36,6 +36,7 @@ ASFLAGS = -I. -MMD -MP
 LDFLAGS += -Wl,-Map,$(@:.x=.map)
 
 INC += -I. -I../include
+INC += -I../libsmb2/include -I../libsmb2/include/smb2
 DEFS +=
 
 OBJS += smbmount.o
@@ -43,6 +44,7 @@ OBJS += smbmount.o
 LIBS +=
 
 all: smbmount.x
+	cp smbmount.x ..
 
 smbmount.x: $(OBJS) $(LIBS)
 	$(LD) -o $@ $^ $(LDFLAGS) -s
