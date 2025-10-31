@@ -47,6 +47,7 @@ endif
 OBJS += head.o
 OBJS += smbfs.o
 OBJS += iconv_mini.o
+OBJS += socket.o
 
 LIBSMB2 = libsmb2.a
 LIBS += $(LIBSMB2)
