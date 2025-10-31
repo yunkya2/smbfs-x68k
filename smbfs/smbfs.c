@@ -750,21 +750,10 @@ int dl_readdir(dirlist_t *dl, void *v)
     }
 
     //属性、時刻、日付、ファイルサイズを取得する
-    hostpath_t fullpath;
-    strcpy(fullpath, dl->hostpath);
-    int len = strlen(fullpath);
-    if (len > 0 && fullpath[len - 1] != '/') {
-      strncat(fullpath, "/", sizeof(fullpath) - 1);
-    }
-    strncat(fullpath, childName, sizeof(fullpath) - 1);
-    TYPE_STAT st;
-    if (FUNC_STAT(dl->unit, NULL, fullpath, &st) < 0) {  // ファイル情報を取得できなかった
+    if (0xffffffffL < STAT_SIZE(DIRENT_STAT(d))) {  //4GB以上のファイルは検索できないことにする
       continue;
     }
-    if (0xffffffffL < STAT_SIZE(&st)) {  //4GB以上のファイルは検索できないことにする
-      continue;
-    }
-    conv_statinfo(&st, fi);
+    conv_statinfo(DIRENT_STAT(d), fi);
     if ((fi->atr & dl->attr) == 0) {  //属性がマッチしない
       continue;
     }

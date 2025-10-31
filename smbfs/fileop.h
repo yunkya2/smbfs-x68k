@@ -49,6 +49,7 @@ typedef struct smb2_stat_64 TYPE_STAT;
 
 typedef struct smb2dirent TYPE_DIRENT;
 #define DIRENT_NAME(d)    ((char *)(d)->name)
+#define DIRENT_STAT(d)    (&((d)->st))
 
 typedef uint64_t TYPE_DIR;
 #define DIR_BADDIR        (uint64_t)0
