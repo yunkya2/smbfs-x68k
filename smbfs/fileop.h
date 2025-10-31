@@ -31,6 +31,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/endian.h>
 
 #include <smb2.h>
 #include <libsmb2.h>
@@ -72,23 +73,6 @@ union smb2fd {
 };
 #define fd2sfh(fd)        (((union smb2fd *)&fd)->sfh)
 #define fd2smb2(fd)       (((union smb2fd *)&fd)->smb2)
-
-//****************************************************************************
-// Endian functions
-//****************************************************************************
-
-static inline uint16_t bswap16 (uint16_t x)
-{
-  return (x >> 8) | (x << 8);
-}
-static inline uint32_t bswap32 (uint32_t x)
-{
-  return (bswap16(x & 0xffff) << 16) | (bswap16(x >> 16));
-}
-#define htobe16(x) bswap16(x)
-#define htobe32(x) bswap32(x)
-#define be16toh(x) bswap16(x)
-#define be32toh(x) bswap32(x)
 
 //****************************************************************************
 // SJIS <-> UTF-8 conversion

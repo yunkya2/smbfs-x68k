@@ -39,6 +39,7 @@
 #include <humandefs.h>
 #include "smbfs.h"
 
+#define DEBUG
 
 struct smb2_context *path2smb2(const char *path, const char **shpath);
 
@@ -55,13 +56,17 @@ jmp_buf jenv;                       // タイムアウト時のジャンプ先
 int unit_base = 0;                  // ユニット番号のベース値  (必要? TBD *****)
 
 const char *rootpath[8] = { "/", NULL, NULL, NULL, NULL, NULL, NULL, NULL }; // ホスト側のルートパス
-struct smb2_context *rootsmb2;
+struct smb2_context *smb2 = NULL;
 
 #ifdef DEBUG
 int debuglevel = 2;
 #endif
 
 uint32_t _vernum;
+
+char **environ = { NULL };
+
+uint16_t stack[32 * 1024];
 
 //****************************************************************************
 // for debugging
@@ -142,7 +147,7 @@ struct smb2_context *path2smb2(const char *path, const char **shpath)
     path++;
   *shpath = path;   // 共有名に続くパスの先頭をセット
 
-  return rootsmb2;
+  return smb2;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -228,6 +233,8 @@ static int conv_namebuf(int unit, struct dos_namestbuf *ns, bool full, hostpath_
 static int conv_errno(int err)
 {
   switch (err) {
+  case 0:
+    return 0;
   case ENOENT:
     return _DOSE_NOENT;
   case ENOTDIR:
@@ -1498,32 +1505,24 @@ case 0x50: /* dskfre */
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-#if 0
-
-case 0x51: /* drvctrl */
-  {
-    DPRINTF1("DRVCTRL:\r\n");
-    req->attr = 2;
-    req->status = 0;
-    break;
-  }
-#endif
+int op_drvctrl(struct dos_req_header *req)
+{
+  DPRINTF1("DRVCTRL:\r\n");
+  req->attr = 2;
+  return 0;
+}
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-#if 0
-
-case 0x52: /* getdbp */
-  {
-    DPRINTF1("GETDPB:\r\n");
-    uint8_t *p = (uint8_t *)req->addr;
-    memset(p, 0, 16);
-    *(uint16_t *)&p[0] = 512;   // 一部のアプリがエラーになるので仮のセクタ長を設定しておく
-    p[2] = 1;
-    req->status = 0;
-    break;
-  }
-#endif
+int op_getdpb(struct dos_req_header *req)
+{
+  DPRINTF1("GETDPB:\r\n");
+  uint8_t *p = (uint8_t *)req->addr;
+  memset(p, 0, 16);
+  *(uint16_t *)&p[0] = 512;   // 一部のアプリがエラーになるので仮のセクタ長を設定しておく
+  p[2] = 1;
+  return 0;
+}
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
@@ -1678,7 +1677,13 @@ int interrupt(void)
 #endif
 
   case 0x51: /* drvctrl */
-  case 0x52: /* getdbp */
+    req->status = op_drvctrl(req);
+    break;
+
+  case 0x52: /* getdpb */
+    req->status = op_getdpb(req);
+    break;
+
   case 0x53: /* diskred */
   case 0x54: /* diskwrt */
   case 0x55: /* ioctl */
@@ -1711,8 +1716,23 @@ struct dos_dpb dummy_dpb = {
   0
 };
 
+struct dos_comline *cmdline;
+char *memblock;
+extern char _end;
+
 void _start()
 {
+  __asm__ volatile ("move.l %%a0,%0" : "=m"(memblock));
+  __asm__ volatile ("move.l %%a2,%0" : "=m"(cmdline));
+  __asm__ volatile ("move.l %0,%%sp" : : "a"(stack + 32 * 1024));
+
+
+  DPRINTF1("commandline: %s\r\n", (char *)cmdline->buffer);
+
+  _dos_setblock(memblock + 0x10, (int)&_end - (int)&devheader + 0xf0);
+
+//  system("process");
+
   _dos_super(0);
 
   char *drvxtbl = (char *)0x1c7e;     // ドライブ交換テーブル
@@ -1765,10 +1785,12 @@ void _start()
   }
 
   printf("ドライブ %c: (real %c:)\n", 'A' + drv, 'A' + realdrv);
+  printf("_HSTA=%p\n", _HSTA);
 
   dummy_dpb.drive = realdrv; 
   dummy_dpb.next = (void *)-1;
 
+#if 1
   struct dos_dpb *prev_dpb = NULL;
   for (int i = 0; i < realdrv; i++) {
     if (curdir_table[i].type == 0x40) {
@@ -1789,7 +1811,37 @@ void _start()
   curdir->dpb = &dummy_dpb;
   curdir->fatno = (int)-1;
   curdir->pathlen = 2;
+#endif
 
-  extern char _end;
+  if (strlen(cmdline->buffer) > 0) {
+    smb2 = smb2_init_context();
+    printf("smb2_init_context: %p\n", smb2);
+    if (smb2 != NULL) {
+      smb2_set_security_mode(smb2, SMB2_NEGOTIATE_SIGNING_ENABLED);
+      DPRINTF1("smb2_connect_share\r\n");
+      if (smb2_connect_share(smb2, "<server>", "<share>", "<user>") < 0) {
+        DPRINTF1("smb2_connect_share failed. %s\r\n", smb2_get_error(smb2));
+        smb2_destroy_context(smb2);
+      } else {
+        DPRINTF1("smb2_connect_share succeeded.\r\n");
+      }
+    } else {
+      DPRINTF1("Failed to init context\r\n");
+    } 
+  }
+
   _dos_keeppr((int)&_end - (int)&devheader, 0);
+}
+
+#if 0
+int _dos_setblock(void *ptr, int size)
+{
+  DPRINTF1("_dos_setblock called\r\n");
+  return 0;
+}
+#endif
+void *	_dos_malloc (int)
+{
+  DPRINTF1("_dos_malloc called\r\n");
+  return NULL;
 }
