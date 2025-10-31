@@ -32,11 +32,19 @@
 #include <ctype.h>
 #include <setjmp.h>
 #include <errno.h>
+#include <sys/socket.h>
 #include <x68k/dos.h>
 #include <x68k/iocs.h>
 
+#include <smb2.h>
+#include <libsmb2.h>
+#include <libsmb2-raw.h>
+#include <libsmb2-private.h>
+
 #include <config.h>
 #include <humandefs.h>
+#include <smbfscmd.h>
+
 #include "smbfs.h"
 
 #define DEBUG
@@ -57,7 +65,7 @@ struct dos_req_header *reqheader;   // Human68kからのリクエストヘッダ
 jmp_buf jenv;                       // タイムアウト時のジャンプ先
 int unit_base = 0;                  // ユニット番号のベース値  (必要? TBD *****)
 
-const char *rootpath[8] = { "/", NULL, NULL, NULL, NULL, NULL, NULL, NULL }; // ホスト側のルートパス
+const char *rootpath[8];                // 各ユニットのホストパス
 struct smb2_context *smb2 = NULL;
 
 #ifdef DEBUG
@@ -66,7 +74,8 @@ int debuglevel = 1;
 
 uint32_t _vernum;
 
-char **environ = { NULL };
+char ** const environ_none = { NULL };
+char **environ;
 
 uint16_t stack[32 * 1024];
 
@@ -1197,22 +1206,118 @@ int op_diskwrt(struct dos_req_header *req)
 
 int op_ioctl(struct dos_req_header *req)
 {
-  int res;
   int func = (int)req->status >> 16;
   DPRINTF1("IOCTL: cmd=%d buf=%p\r\n", func, req->addr);
 
   switch (func) {
-  case -1:
-    memcpy(req->addr, "SMBFSv1 ", 8);
-    res = 0;
-    break;
+  case SMBCMD_GETNAME:
+    memcpy(req->addr, SMBFS_SIGNATURE, 8);
+    return 0;
+  case SMBCMD_NOP:
+    return 0;
+
+  case SMBCMD_MOUNT:
+    {
+      struct smbcmd_mount *mnt = (struct smbcmd_mount *)req->addr;
+
+      DPRINTF1(" MOUNT url=%s user=%s pass=%s\r\n",
+               mnt->url, mnt->username, mnt->password);
+
+
+      if (smb2 != NULL) {
+        DPRINTF1(" already mounted\r\n");
+        return -1;
+      }
+
+      smb2 = smb2_init_context();
+      if (smb2 == NULL) {
+        DPRINTF1("  -> NOMEM\r\n");
+        return -1;
+      }
+
+      // NTLM_USER_FILEを参照するため、smbmount実行時に設定された環境変数を引き継ぐ
+      environ = mnt->environ;
+
+      struct smb2_url *url = smb2_parse_url(smb2, mnt->url);
+      if (url == NULL) {
+        environ = environ_none;
+        smb2_destroy_context(smb2);
+        smb2 = NULL;
+        return -1;
+      }
+
+      if (url->user) {
+        smb2_set_user(smb2, url->user);
+      }
+      if (mnt->username && mnt->username[0] != '\0') {
+        smb2_set_user(smb2, mnt->username);
+      }
+      if (mnt->password) {
+        smb2_set_password(smb2, mnt->password);
+      }
+
+      DPRINTF1("server=%s share=%s path=%s user=%s\r\n",
+               url->server, url->share, url->path, smb2_get_user(smb2));
+
+      // 環境変数を元に戻す
+      environ = environ_none;
+
+      if (smb2->password == NULL) {
+        strcpy(mnt->username, smb2->user);
+        smb2_destroy_url(url);
+        smb2_destroy_context(smb2);
+        smb2 = NULL;
+        DPRINTF1("  -> NOPASS\r\n");
+        return -2;
+      }
+
+      smb2_set_security_mode(smb2, SMB2_NEGOTIATE_SIGNING_ENABLED);
+      DPRINTF1("smb2_connect_share\r\n");
+      if (smb2_connect_share(smb2, url->server, url->share, NULL) < 0) {
+        DPRINTF1("smb2_connect_share failed. %s\r\n", smb2_get_error(smb2));
+        smb2_destroy_url(url);
+        smb2_destroy_context(smb2);
+        smb2 = NULL;
+        return -1;
+      }
+
+      DPRINTF1("smb2_connect_share succeeded.\r\n");
+
+      static hostpath_t rootpath_buf;
+      if (url->path) {
+        strncpy(rootpath_buf, url->path, sizeof(rootpath_buf) - 1);
+      } else {
+        rootpath_buf[0] = '\0';
+      }
+      rootpath[0] = rootpath_buf;
+    }
+    return 0;
+
+  case SMBCMD_UNMOUNT:
+    DPRINTF1(" UNMOUNT\r\n");
+    if (smb2 == NULL) {
+      DPRINTF1(" not mounted\r\n");
+      return -1;
+    }
+
+    fi_freeall(0);
+    dl_freeall(0);
+
+    smb2_disconnect_share(smb2);
+    smb2_destroy_context(smb2);
+    smb2 = NULL;
+    rootpath[0] = NULL;
+
+    DPRINTF1(" unmounted\r\n");
+    return 0;
+
+  case SMBCMD_GETTIME:
+    DPRINTF1(" GETTIME\r\n");
+    return 0;
 
   default:
-    res = -1;
-    break;
+    return -1;
   }
-
-  return res;
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
@@ -1382,12 +1487,22 @@ void _start()
   __asm__ volatile ("move.l %%a2,%0" : "=m"(cmdline));
   __asm__ volatile ("move.l %0,%%sp" : : "a"(stack + 32 * 1024));
 
+  environ = environ_none;
 
   DPRINTF1("commandline: %s\r\n", (char *)cmdline->buffer);
 
   _dos_setblock(memblock + 0x10, (int)&_end - (int)&devheader + 0xf0);
 
 //  system("process");
+
+  // Check whether TCP/IP is available
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    DPRINTF1("TCP/IP ドライバが常駐していません\r\n");
+    _dos_exit();
+  }
+  DPRINTF1("socket fd=%d\r\n", fd);
+  close(fd);
 
   _dos_super(0);
 
@@ -1441,10 +1556,6 @@ void _start()
     _dos_exit();
   }
 
-//  printf("ドライブ %c: (real %c:)\n", 'A' + drv, 'A' + realdrv);
-//  printf("_HSTA=%p\n", _HSTA);
-  printf("ドライブ %c: にSMBFSをマウントしました\n", 'A' + drv);
-
   dummy_dpb.drive = realdrv; 
   dummy_dpb.next = (void *)-1;
 
@@ -1471,35 +1582,9 @@ void _start()
   curdir->pathlen = 2;
 #endif
 
-//  if (strlen(cmdline->buffer) > 0) {
-    smb2 = smb2_init_context();
-    printf("smb2_init_context: %p\n", smb2);
-    if (smb2 != NULL) {
-      smb2_set_security_mode(smb2, SMB2_NEGOTIATE_SIGNING_ENABLED);
-      DPRINTF1("smb2_connect_share\r\n");
-      if (smb2_connect_share(smb2, "<server>", "<share>", "<user>") < 0) {
-        DPRINTF1("smb2_connect_share failed. %s\r\n", smb2_get_error(smb2));
-        smb2_destroy_context(smb2);
-      } else {
-        DPRINTF1("smb2_connect_share succeeded.\r\n");
-      }
-    } else {
-      DPRINTF1("Failed to init context\r\n");
-    } 
-//  }
+  // TODO: device header chainを繋ぐ
+
+  printf("常駐しました。ドライブ %c: をSMBFSとして使用できます\n", 'A' + drv);
 
   _dos_keeppr((int)&_end - (int)&devheader, 0);
-}
-
-#if 0
-int _dos_setblock(void *ptr, int size)
-{
-  DPRINTF1("_dos_setblock called\r\n");
-  return 0;
-}
-#endif
-void *	_dos_malloc (int)
-{
-  DPRINTF1("_dos_malloc called\r\n");
-  return NULL;
 }
