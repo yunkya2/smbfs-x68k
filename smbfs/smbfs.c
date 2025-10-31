@@ -38,6 +38,8 @@
 #include <humandefs.h>
 #include "smbfs.h"
 
+typedef struct dos_namestbuf dos_namebuf;
+
 struct smb2_context *path2smb2(const char *path, const char **shpath);
 
 #include "fileop.h"
@@ -64,15 +66,10 @@ uint32_t _vernum;
 // for debugging
 //****************************************************************************
 
-int main()
-{
-
-}
-
 #ifdef DEBUG
-char heap[1024];                // temporary heap for debug print
+char heap[1024 * 512];                // temporary heap for debug print
 void *_HSTA = heap;
-void *_HEND = heap + 1024;
+void *_HEND = heap + sizeof(heap);
 void *_PSP;
 
 void DPRINTF(int level, char *fmt, ...)
@@ -1031,8 +1028,98 @@ int interrupt(void)
 }
 
 //****************************************************************************
-// Dummy program entry
+// Program entry
 //****************************************************************************
 
-void _start(void)
-{}
+extern struct dos_devheader devheader;
+
+struct dos_dpb dummy_dpb = {
+  0,
+  0,
+  &devheader,
+  0,
+  0
+};
+
+void _start()
+{
+  _dos_super(0);
+
+  char *drvxtbl = (char *)0x1c7e;     // ドライブ交換テーブル
+  struct dos_curdir *curdir_table = *(struct dos_curdir **)0x1c38;
+
+  int drv;
+  int realdrv;
+  struct dos_dpb *dpb;
+  struct dos_curdir *curdir;
+
+  realdrv = -1;
+  for (drv = 0; drv < 26; drv++) {
+    realdrv = drvxtbl[drv];
+    curdir = &curdir_table[realdrv];
+    if (curdir->type == 0x40) {
+      dpb = curdir->dpb;
+      if (memcmp(dpb->devheader->name, CONFIG_DEVNAME, 8) == 0) {
+        break;
+      }
+    }
+  }
+
+  if (drv < 26) {
+    // 常駐解除
+    // TODO: バッファフラッシュ
+    // TODO: ディレクトリ移動、subst設定時の対応
+    printf("free %c: %p\n", 'A' + drv, dpb->devheader);
+    curdir->type = 0;
+    struct dos_dpb *olddpb = (struct dos_dpb *)((char *)dpb->devheader + ((char *)&dummy_dpb - (char *)&devheader));
+    for (int i = 0; i < 26; i++) {
+      if (curdir_table[i].type == 0x40 &&
+        curdir_table[i].dpb->next == olddpb) {
+        curdir_table[i].dpb->next = olddpb->next;
+      }
+    }
+    _dos_mfree((char *)dpb->devheader - 0xf0);
+    _dos_exit();
+  }
+
+  realdrv = -1;
+  for (drv = 0; drv < 26; drv++) {
+    realdrv = drvxtbl[drv];
+    if (curdir_table[realdrv].type == 0) {
+      break;
+    }
+  }
+  if (realdrv < 0 || realdrv > *(char *)0x1c73) {
+    printf("割り当て可能なドライブがありません\n");
+    _dos_exit();
+  }
+
+  printf("ドライブ %c: (real %c:)\n", 'A' + drv, 'A' + realdrv);
+
+  dummy_dpb.drive = realdrv; 
+  dummy_dpb.next = (void *)-1;
+
+  struct dos_dpb *prev_dpb = NULL;
+  for (int i = 0; i < realdrv; i++) {
+    if (curdir_table[i].type == 0x40) {
+      prev_dpb = curdir_table[i].dpb;
+    }
+  }
+  if (prev_dpb != NULL) {
+    dummy_dpb.next = prev_dpb->next;
+    prev_dpb->next = &dummy_dpb;
+  }
+
+  curdir = &curdir_table[realdrv];
+  curdir->drive = 'A' + realdrv;
+  curdir->coron = ':';
+  curdir->path[0] = '\t';
+  curdir->path[1] = '\0';
+  curdir->type = 0x40;
+  curdir->dpb = &dummy_dpb;
+  curdir->fatno = (int)-1;
+  curdir->pathlen = 2;
+
+  extern char _end;
+  _dos_keeppr((int)&_end - (int)&devheader, 0);
+}

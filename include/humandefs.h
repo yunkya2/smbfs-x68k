@@ -62,16 +62,35 @@ struct dos_filesinfo {
   char name[23];
 } __attribute__((packed, aligned(2)));  // part of dos_filbuf
 
-typedef struct dos_namestbuf dos_namebuf;
-#if 0
-typedef struct {
-  uint8_t flag;
-  uint8_t drive;
-  uint8_t path[65];
-  uint8_t name1[8];
-  uint8_t ext[3];
-  uint8_t name2[10];
-} dos_namebuf;    // == struct dos_namestbuf
-#endif
+
+
+struct dos_devheader {
+    struct dos_devheader *next;
+    uint16_t    attr;
+    void        *strategy;
+    void        *interrupt;
+    char        name[8];
+};
+
+struct dos_dpb {
+    int8_t      drive;
+    int8_t      unit;
+    struct dos_devheader *devheader;
+    struct dos_dpb *next;
+    uint16_t    secbyte;
+} __attribute__((packed,aligned(2)));
+
+struct dos_curdir {
+    uint8_t     drive;      // 物理ドライブ名
+    uint8_t     coron;      // コロン文字 (':')
+    uint8_t     path[62];   // カレントディレクトリのパス (デリミタは'\t')
+    uint32_t    reserved1;
+    uint8_t     reserved2;
+    uint8_t     type;       // ドライブ種別
+    struct dos_dpb *dpb;
+    uint16_t    fatno;
+    uint16_t    pathlen;
+} __attribute__((packed,aligned(2)));
+
 
 #endif /* _HUMANDEFS_H_ */
