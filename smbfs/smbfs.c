@@ -59,7 +59,7 @@ const char *rootpath[8] = { "/", NULL, NULL, NULL, NULL, NULL, NULL, NULL }; // 
 struct smb2_context *smb2 = NULL;
 
 #ifdef DEBUG
-int debuglevel = 2;
+int debuglevel = 1;
 #endif
 
 uint32_t _vernum;
@@ -72,12 +72,12 @@ uint16_t stack[32 * 1024];
 // for debugging
 //****************************************************************************
 
-#ifdef DEBUG
 char heap[1024 * 512];                // temporary heap for debug print
 void *_HSTA = heap;
 void *_HEND = heap + sizeof(heap);
 void *_PSP;
 
+#ifdef DEBUG
 void DPRINTF(int level, char *fmt, ...)
 {
   char buf[256];
@@ -109,34 +109,6 @@ void DNAMEPRINT(void *n, bool full, char *head)
 // Utility routine
 //****************************************************************************
 
-#if 0
-#if CONFIG_NFILEINFO > 1
-struct fcache {
-  uint32_t filep;
-  int cnt;
-  struct res_files files;
-} fcache[CONFIG_NFCACHE];
-
-struct fcache *fcache_alloc(uint32_t filep, bool new)
-{
-  for (int i = 0; i < CONFIG_NFCACHE; i++) {
-    if (fcache[i].filep == filep) {
-      return &fcache[i];
-    }
-  }
-  if (!new)
-    return NULL;
-  for (int i = 0; i < CONFIG_NFCACHE; i++) {
-    if (fcache[i].filep == 0) {
-      return &fcache[i];
-    }
-  }
-  return NULL;
-}
-#endif
-#endif
-
-//////////////////////////////////////////////////////////////////////////////
 
 // 与えられたpath先頭の共有名パートを抜き出して、その共有名に対応するsmb2_contextを返す
 // 共有名に続くパスをshpathに返す
@@ -434,7 +406,7 @@ int op_rename(struct dos_req_header *req)
   int err;
   FUNC_RENAME(req->unit, &err, pathold, pathnew);
 
-  DPRINTF1("RENAME: %s to %s  -> %d\n", pathold, pathnew, err);
+  DPRINTF1("RENAME: %s to %s  -> %d\r\n", pathold, pathnew, err);
 
   switch (err) {
   case ENOTEMPTY:
@@ -627,7 +599,7 @@ static int dl_opendir(dirlist_t **dlp, struct dos_req_header *req)
   DPRINTF2("dl_opendir: %02x ", dl->attr);
   for (int i = 0; i < 21; i++)
     DPRINTF2("%c", dl->fname[i] == 0 ? '_' : dl->fname[i]);
-  DPRINTF2("\n");
+  DPRINTF2("\r\n");
 
   //ディレクトリを開いてディスクリプタを得る
   int err;
@@ -717,7 +689,7 @@ int dl_readdir(dirlist_t *dl, void *v)
 
     for (int i = 0; i < 21; i++)
       DPRINTF2("%c", w2[i] == 0 ? '_' : w2[i]);
-    DPRINTF2("\n");
+    DPRINTF2("\r\n");
 
     //ファイル名を比較する
     {
@@ -771,7 +743,7 @@ int op_files(struct dos_req_header *req)
   struct dos_filbuf *fb = (struct dos_filbuf *)req->status;
 
   DNAMEPRINT(req->addr, true, "FILES: ");
-  DPRINTF1("\n");
+  DPRINTF1("\r\n");
 
   int err = dl_opendir(&dl, req);
   if (err) {
@@ -822,63 +794,108 @@ int op_nfiles(struct dos_req_header *req)
 // File operations
 //****************************************************************************
 
+// file descriptor management structure
+// Human68kから渡されるFCBのアドレスをキーとしてfdを管理する
+typedef struct {
+  uint32_t fcb;
+  TYPE_FD fd;
+  off_t pos;
+  int unit;
+} fdinfo_t;
+
+static fdinfo_t *fi_store;
+static int fi_size = 0;
+
+// FCBに対応するバッファを探す
+static fdinfo_t *fi_alloc(int unit, uint32_t fcb, bool alloc)
+{
+  for (int i = 0; i < fi_size; i++) {
+    if (fi_store[i].fcb == fcb) {
+      if (alloc) {              // 新規作成で同じFCBを見つけたらバッファを再利用
+        FUNC_CLOSE(unit, NULL, fi_store[i].fd);
+        fi_store[i].fd = FD_BADFD;
+        fi_store[i].unit = unit;
+      }
+      return &fi_store[i];
+    }
+  }
+  if (!alloc)
+    return NULL;
+
+  for (int i = 0; i < fi_size; i++) {
+    if (fi_store[i].fcb == 0) { // 新規作成で未使用のバッファを見つけた
+      fi_store[i].fcb = fcb;
+      fi_store[i].unit = unit;
+      return &fi_store[i];
+    }
+  }
+  fi_size++;                    // バッファが不足しているので拡張する
+  fi_store = realloc(fi_store, sizeof(fdinfo_t) * fi_size);   // TBD: エラー処理
+  fi_store[fi_size - 1].fcb = fcb;
+  fi_store[fi_size - 1].fd = FD_BADFD;
+  fi_store[fi_size - 1].unit = unit;
+  return &fi_store[fi_size - 1];
+}
+
+// 不要になったバッファを解放する
+static void fi_free(uint32_t fcb)
+{
+  for (int i = 0; i < fi_size; i++) {
+    if (fi_store[i].fcb == fcb) {
+      fi_store[i].fcb = 0;
+      fi_store[i].fd = FD_BADFD;
+      return;
+    }
+  }
+}
+
+static void fi_freeall(int unit)
+{
+  for (int i = 0; i < fi_size; i++) {
+    if (fi_store[i].fd != FD_BADFD && fi_store[i].unit == unit) {
+      FUNC_CLOSE(unit, NULL, fi_store[i].fd);
+      fi_store[i].fd = FD_BADFD;
+      fi_store[i].fcb = 0;
+    }
+  }
+}
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
 int op_create(struct dos_req_header *req)
 {
-#if 0
-  struct cmd_create *cmd = (struct cmd_create *)cbuf;
-  struct res_create *res = (struct res_create *)rbuf;
   hostpath_t path;
   TYPE_FD filefd;
 
-  res->res = 0;
+  DNAMEPRINT(req->addr, true, "CREATE: ");
 
-  if (conv_namebuf(unit, &cmd->path, true, &path) < 0) {
-    res->res = _DOSE_NODIR;
-    goto errout;
+  if (conv_namebuf(req->unit, req->addr, true, &path) < 0) {
+    DPRINTF1("-> NODIR\r\n");
+    return _DOSE_NODIR;
   }
 
   int mode = O_CREAT|O_RDWR|O_TRUNC|O_BINARY;
-  mode |= cmd->mode ? 0 : O_EXCL;
+  mode |= req->status ? 0 : O_EXCL;
+
   int err;
-  if ((filefd = FUNC_OPEN(unit, &err, path, mode)) == FD_BADFD) {
+  if ((filefd = FUNC_OPEN(req->unit, &err, path, mode)) == FD_BADFD) {
     switch (err) {
     case ENOSPC:
-      res->res = _DOSE_DIRFULL;
-      break;
+      DPRINTF1("-> DIRFULL\r\n");
+      return _DOSE_DIRFULL;
     default:
-      res->res = conv_errno(err);
-      break;
+      err = conv_errno(err);
+      DPRINTF1("-> %d\r\n", err);
+      return err;
     }
-  } else {
-    fdinfo_t *fi = fi_alloc(unit, cmd->fcb, true);
-    fi->fd = filefd;
-    fi->pos = 0;
   }
-errout:
-  DPRINTF1("CREATE: fcb=0x%08x attr=0x%02x mode=%d %s -> %d\n", cmd->fcb, cmd->attr, cmd->mode, path, res->res);
-  return sizeof(*res);
-}
+  
+  fdinfo_t *fi = fi_alloc(req->unit, (uint32_t)req->fcb, true);
+  fi->fd = filefd;
+  fi->pos = 0;
+  dos_fcb_size(req->fcb) = 0;
 
-
-case 0x49: /* create */
-  {
-
-    struct cmd_create *cmd = &comp->cmd_create;
-    struct res_create *res = &comp->res_create;
-    cmd->command = req->command;
-    cmd->attr = req->attr;
-    cmd->mode = req->status;
-    cmd->fcb = (uint32_t)req->fcb;
-    memcpy(&cmd->path, req->addr, sizeof(struct dos_namestbuf));
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-    dos_fcb_size(req->fcb) = 0;
-    DNAMEPRINT(req->addr, true, "CREATE: ");
-    DPRINTF1(" fcb=0x%08x attr=0x%02x mode=%d -> %d\r\n", (uint32_t)req->fcb, req->attr, req->status, res->res);
-    req->status = res->res;
-
-    break;
-  }
-#endif
+  DPRINTF1(" fcb=0x%08x attr=0x%02x mode=%d\r\n", (uint32_t)req->fcb, req->attr, req->status);
   return 0;
 }
 
@@ -886,21 +903,18 @@ case 0x49: /* create */
 
 int op_open(struct dos_req_header *req)
 {
-#if 0
-  struct cmd_open *cmd = (struct cmd_open *)cbuf;
-  struct res_open *res = (struct res_open *)rbuf;
   hostpath_t path;
   int mode;
   TYPE_FD filefd;
 
-  res->res = 0;
+  DNAMEPRINT(req->addr, true, "OPEN: ");
 
-  if (conv_namebuf(unit, &cmd->path, true, &path) < 0) {
-    res->res = _DOSE_NODIR;
-    goto errout;
+  if (conv_namebuf(req->unit, req->addr, true, &path) < 0) {
+    DPRINTF1("-> NODIR\r\n");
+    return _DOSE_NODIR;
   }
 
-  switch (cmd->mode) {
+  switch (dos_fcb_mode(req->fcb)) {
   case 0:
     mode = O_RDONLY|O_BINARY;
     break;
@@ -911,53 +925,31 @@ int op_open(struct dos_req_header *req)
     mode = O_RDWR|O_BINARY;
     break;
   default:
-    res->res = _DOSE_ILGARG;
-    goto errout;
+    DPRINTF1("-> ILGARG\r\n");
+    return _DOSE_ILGARG;
   }
 
   int err;
-  if ((filefd = FUNC_OPEN(unit, &err, path, mode)) == FD_BADFD) {
+  if ((filefd = FUNC_OPEN(req->unit, &err, path, mode)) == FD_BADFD) {
     switch (err) {
     case EINVAL:
-      res->res = _DOSE_ILGARG;
-      break;
+      DPRINTF1("-> ILGARG\r\n");
+      return _DOSE_ILGARG;
     default:
-      res->res = conv_errno(err);
-      break;
+      err = conv_errno(err);
+      DPRINTF1("-> %d\r\n", err);
+      return err;
     }
-  } else {
-    fdinfo_t *fi = fi_alloc(unit, cmd->fcb, true);
-    fi->fd = filefd;
-    fi->pos = 0;
-    uint32_t len = FUNC_LSEEK(unit, NULL, filefd, 0, SEEK_END);
-    FUNC_LSEEK(unit, NULL, filefd, 0, SEEK_SET);
-    res->size = htobe32(len);
   }
-errout:
-  DPRINTF1("OPEN: fcb=0x%08x mode=%d %s -> %d %d\n", cmd->fcb, cmd->mode, path, res->res, be32toh(res->size));
-  return sizeof(*res);
-}
+  
+  fdinfo_t *fi = fi_alloc(req->unit, (uint32_t)req->fcb, true);
+  fi->fd = filefd;
+  fi->pos = 0;
+  uint32_t len = FUNC_LSEEK(req->unit, NULL, filefd, 0, SEEK_END);
+  dos_fcb_size(req->fcb) = len;
+  FUNC_LSEEK(req->unit, NULL, filefd, 0, SEEK_SET);
 
-
-case 0x4a: /* open */
-  {
-#if 0
-    struct cmd_open *cmd = &comp->cmd_open;
-    struct res_open *res = &comp->res_open;
-    int mode = dos_fcb_mode(req->fcb);
-    cmd->command = req->command;
-    cmd->mode = mode;
-    cmd->fcb = (uint32_t)req->fcb;
-    memcpy(&cmd->path, req->addr, sizeof(struct dos_namestbuf));
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-    dos_fcb_size(req->fcb) = res->size;
-    DNAMEPRINT(req->addr, true, "OPEN: ");
-    DPRINTF1(" fcb=0x%08x mode=%d -> %d %d\r\n", (uint32_t)req->fcb, mode, res->res, res->size);
-    req->status = res->res;
-#endif
-    break;
-  }
-#endif
+  DPRINTF1(" fcb=0x%08x mode=%d -> %d\r\n", (uint32_t)req->fcb, dos_fcb_mode(req->fcb), len);
   return 0;
 }
 
@@ -965,399 +957,200 @@ case 0x4a: /* open */
 
 int op_close(struct dos_req_header *req)
 {
-#if 0
-  struct cmd_close *cmd = (struct cmd_close *)cbuf;
-  struct res_close *res = (struct res_close *)rbuf;
-  fdinfo_t *fi = fi_alloc(unit, cmd->fcb, false);
-  res->res = 0;
+  DPRINTF1("CLOSE: ");
 
-  if (!fi) {
-    res->res = _DOSE_BADF;
-    goto errout;
+  fdinfo_t *fi = fi_alloc(req->unit, (uint32_t)req->fcb, false);
+  if (fi == NULL) {
+    DPRINTF1("-> BADF\r\n");
+    return _DOSE_BADF;
   }
 
   int err;
-  if (FUNC_CLOSE(unit, &err, fi->fd) < 0) {
-    res->res = conv_errno(err);
+  if (FUNC_CLOSE(req->unit, &err, fi->fd) < 0) {
+    err = conv_errno(err);
   }
 
-errout:
-  fi_free(cmd->fcb);
-  DPRINTF1("CLOSE: fcb=0x%08x\n", cmd->fcb);
-  return sizeof(*res);
-}
-
-void op_closeall(int unit)
-{
-  fi_freeall(unit);
-}
-
-
-case 0x4b: /* close */
-  {
-#if 0
-    dcache_flash((uint32_t)req->fcb, true);
-
-    struct cmd_close *cmd = &comp->cmd_close;
-    struct res_close *res = &comp->res_close;
-    cmd->command = req->command;
-    cmd->fcb = (uint32_t)req->fcb;
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-    DPRINTF1("CLOSE: fcb=0x%08x\r\n", (uint32_t)req->fcb);
-    req->status = res->res;
-#endif
-    break;
-  }
-#endif
-  return 0;
+  fi_free((uint32_t)req->fcb);
+  DPRINTF1("fcb=0x%08x err=%d\r\n", req->fcb, err);
+  return err;
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 int op_read(struct dos_req_header *req)
 {
-#if 0
-  struct cmd_read *cmd = (struct cmd_read *)cbuf;
-  struct res_read *res = (struct res_read *)rbuf;
-  fdinfo_t *fi = fi_alloc(unit, cmd->fcb, false);
-  uint32_t pos = be32toh(cmd->pos);
-  size_t len = be16toh(cmd->len);
+  DPRINTF1("READ: ");
+
+  fdinfo_t *fi = fi_alloc(req->unit, (uint32_t)req->fcb, false);
+  if (fi == NULL) {
+    DPRINTF1("-> BADF\r\n");
+    return _DOSE_BADF;
+  }
+
+  uint32_t *pp = &dos_fcb_fpos(req->fcb);
   ssize_t bytes = 0;
-
-  if (!fi) {
-    res->len = _DOSE_BADF;
-    goto errout;
-  }
-
   int err;
-  if (fi->pos != pos) {
-    if (FUNC_LSEEK(unit, &err, fi->fd, pos, SEEK_SET) < 0) {
-      res->len = htobe32(conv_errno(err));
-      goto errout;
+  if (fi->pos != *pp) {
+    if (FUNC_LSEEK(req->unit, &err, fi->fd, *pp, SEEK_SET) < 0) {
+      err = conv_errno(err);
+      DPRINTF1("-> %d\r\n", err);
+      return err;
     }
+    fi->pos = *pp;
   }
-  bytes = FUNC_READ(unit, &err, fi->fd, res->data, len);
+  bytes = FUNC_READ(req->unit, &err, fi->fd, req->addr, req->status);
   if (bytes < 0) {
-    res->len = htobe16(conv_errno(err));
-    bytes = 0;
-  } else {
-    res->len = htobe16(bytes);
-    fi->pos += bytes;
+    err = conv_errno(err);
+    DPRINTF1("-> %d\r\n", err);
+    return err;
   }
 
-errout:
-  DPRINTF1("READ: fcb=0x%08x %d %d -> %d\n", cmd->fcb, pos, len, bytes);
-  return offsetof(struct res_read, data) + bytes;
-}
+  fi->pos += bytes;
+  *pp = fi->pos;
 
-
-case 0x4c: /* read */
-  {
-#if 0
-    dcache_flash((uint32_t)req->fcb, false);
-
-    uint32_t *pp = &dos_fcb_fpos(req->fcb);
-    char *buf = (char *)req->addr;
-    size_t len = (size_t)req->status;
-    ssize_t size = 0;
-    struct dcache *d;
-    
-    if (d = dcache_alloc((uint32_t)req->fcb)) {
-      // キャッシュが未使用または自分のデータが入っている場合
-      do {
-        if (d->fcb == (uint32_t)req->fcb &&
-            *pp >= d->pos && *pp < d->pos + d->len) {
-          // これから読むデータがキャッシュに入っている場合、キャッシュから読めるだけ読む
-          size_t clen = d->pos + d->len - *pp;   // キャッシュから読めるサイズ
-          clen = clen < len ? clen : len;
-
-          memcpy(buf, d->cache + (*pp - d->pos), clen);
-          buf += clen;
-          len -= clen;
-          size += clen;
-          *pp += clen;    // FCBのファイルポインタを進める
-        }
-        if (len == 0 || len >= sizeof(d->cache))
-          break;
-        // キャッシュサイズ未満の読み込みならキャッシュを充填
-        dcache_flash((uint32_t)req->fcb, true);
-        d->len = send_read((uint32_t)req->fcb, d->cache, *pp, sizeof(d->cache));
-        if (d->len < 0) {
-          size = -1;
-          goto errout_read;
-        }
-        d->fcb = (uint32_t)req->fcb;
-        d->pos = *pp;
-        d->dirty = false;
-      } while (d->len > 0);
-    }
-
-    if (len > 0) {
-      size_t rlen;
-      rlen = send_read((uint32_t)req->fcb, buf, *pp, len);
-      if (rlen < 0) {
-        size = -1;
-        goto errout_read;
-      }
-      size += rlen;
-      *pp += rlen;    // FCBのファイルポインタを進める
-    }
-
-errout_read:
-    DPRINTF1("READ: fcb=0x%08x %d -> %d\r\n", (uint32_t)req->fcb, req->status, size);
-    req->status = size;
-#endif
-    break;
-  }
-#endif
-  return 0;
+  DPRINTF1(" fcb=0x%08x addr=0x%08x len=%d -> pos=%d len=%d\r\n",
+           (uint32_t)req->fcb, (uint32_t)req->addr, req->status, *pp, bytes);
+  return bytes;
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 int op_write(struct dos_req_header *req)
 {
-#if 0
-  struct cmd_write *cmd = (struct cmd_write *)cbuf;
-  struct res_write *res = (struct res_write *)rbuf;
-  fdinfo_t *fi = fi_alloc(unit, cmd->fcb, false);
-  uint32_t pos = be32toh(cmd->pos);
-  size_t len = be16toh(cmd->len);
-  ssize_t bytes;
+  DPRINTF1("WRITE: ");
 
-  if (!fi) {
-    res->len = _DOSE_BADF;
-    goto errout;
+  fdinfo_t *fi = fi_alloc(req->unit, (uint32_t)req->fcb, false);
+  if (fi == NULL) {
+    DPRINTF1("-> BADF\r\n");
+    return _DOSE_BADF;
   }
 
+  uint32_t *pp = &dos_fcb_fpos(req->fcb);
+  uint32_t *sp = &dos_fcb_size(req->fcb);
+  ssize_t bytes = 0;
   int err;
-  if (len == 0) {     // 0バイトのwriteはファイル長を切り詰める
-    if (FUNC_FTRUNCATE(unit, &err, fi->fd, pos) < 0) {
-      res->len = htobe16(conv_errno(err));
+  if (req->status == 0) {     // 0バイトのwriteはファイル長を切り詰める
+    if (FUNC_FTRUNCATE(req->unit, &err, fi->fd, *pp) < 0) {
+      err = conv_errno(err);
+      DPRINTF1("-> %d\r\n", err);
+      return err;
     } else {
-      res->len = 0;
-    }
-  } else {
-    if (fi->pos != pos) {
-      if (FUNC_LSEEK(unit, &err, fi->fd, pos, SEEK_SET) < 0) {
-        res->len = htobe32(conv_errno(err));
-        goto errout;
-      }
-    }
-    bytes = FUNC_WRITE(unit, &err, fi->fd, cmd->data, len);
-    if (bytes < 0) {
-      res->len = htobe16(conv_errno(err));
-    } else {
-      res->len = htobe16(bytes);
-      fi->pos += bytes;
-    }
-  }
-
-errout:
-  DPRINTF1("WRITE: fcb=0x%08x %d %d -> %d\n", cmd->fcb, pos, len, bytes);
-  return sizeof(*res);
-}
-
-
-case 0x4d: /* write */
-  {
-#if 0
-    uint32_t *pp = &dos_fcb_fpos(req->fcb);
-    uint32_t *sp = &dos_fcb_size(req->fcb);
-    size_t len = (uint32_t)req->status;
-    struct dcache *d;
-
-    if (len > 0 && len < sizeof(dcache[0].cache)) {  // 書き込みサイズがキャッシュサイズ未満
-      if (d = dcache_alloc((uint32_t)req->fcb)) {
-        // キャッシュが未使用または自分のデータが入っている場合
-        if (d->fcb == (uint32_t)req->fcb) {         //キャッシュに自分のデータが入っている
-          if ((*pp = d->pos + d->len) &&
-              ((*pp + len) <= (d->pos + sizeof(d->cache)))) {
-            // 書き込みデータがキャッシュに収まる場合はキャッシュに書く
-            memcpy(d->cache + d->len, (char *)req->addr, len);
-            d->len += len;
-            d->dirty = true;
-            goto okout_write;
-          } else {    //キャッシュに収まらないのでフラッシュ
-            dcache_flash((uint32_t)req->fcb, true);
-          }
-        }
-        // 書き込みデータをキャッシュに書く
-        d->fcb = (uint32_t)req->fcb;
-        d->pos = *pp;
-        memcpy(d->cache, (char *)req->addr, len);
-        d->len = len;
-        d->dirty = true;
-        goto okout_write;
-      }
-    }
-
-    dcache_flash((uint32_t)req->fcb, false);
-    len = send_write((uint32_t)req->fcb, (char *)req->addr, *pp, (uint32_t)req->status);
-    if (len == 0) {
       *sp = *pp;      //0バイト書き込み=truncateなのでFCBのファイルサイズをポインタ位置にする
     }
-
-okout_write:
-    if (len > 0) {
-      *pp += len;     //FCBのファイルポインタを進める
-      if (*pp > *sp)
-        *sp = *pp;    //FCBのファイルサイズを増やす
+  } else {
+    if (fi->pos != *pp) {
+      if (FUNC_LSEEK(req->unit, &err, fi->fd, *pp, SEEK_SET) < 0) {
+        err = conv_errno(err);
+        DPRINTF1("-> %d\r\n", err);
+        return err;
+      }
+      fi->pos = *pp;
     }
-    DPRINTF1("WRITE: fcb=0x%08x %d -> %d\r\n", (uint32_t)req->fcb, req->status, len);
-    req->status = len;
-#endif
-    break;
+    bytes = FUNC_WRITE(req->unit, &err, fi->fd, req->addr, req->status);
+    if (bytes < 0) {
+      err = conv_errno(err);
+      DPRINTF1("-> %d\r\n", err);
+      return err;
+    }
+
+    fi->pos += bytes;
+    *pp = fi->pos;
+    if (*pp > *sp) {
+      *sp = *pp;    //FCBのファイルサイズを増やす
+    }
   }
-#endif
-  return 0;
+
+  DPRINTF1(" fcb=0x%08x addr=0x%08x len=%d -> pos=%d size=%d len=%d\r\n",
+           (uint32_t)req->fcb, (uint32_t)req->addr, req->status, *pp, *sp, bytes);
+  return bytes;
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 int op_seek(struct dos_req_header *req)
 {
-
-  #if 0
-
-case 0x4e: /* seek */
-  {
-#if 0
-    dcache_flash((uint32_t)req->fcb, false);
-
-    int whence = req->attr;
-    int32_t offset = req->status;
-    uint32_t pos = dos_fcb_fpos(req->fcb);
-    uint32_t size = dos_fcb_size(req->fcb);
-    pos = (whence == 0 ? 0 : (whence == 1 ? pos : size)) + offset;
-    if (pos > size) {   // ファイル末尾を越えてseekしようとした
-      pos = _DOSE_CANTSEEK;
-    } else {
-      dos_fcb_fpos(req->fcb) = pos;
-    }
-    DPRINTF1("SEEK: fcb=0x%x offset=%d whence=%d -> %d\r\n", (uint32_t)req->fcb, offset, whence, pos);
-    req->status = pos;
-#endif
-    break;
+  int whence = req->attr;
+  int32_t offset = req->status;
+  uint32_t pos = dos_fcb_fpos(req->fcb);
+  uint32_t size = dos_fcb_size(req->fcb);
+  pos = (whence == 0 ? 0 : (whence == 1 ? pos : size)) + offset;
+  if (pos > size) {   // ファイル末尾を越えてseekしようとした
+    pos = _DOSE_CANTSEEK;
+  } else {
+    dos_fcb_fpos(req->fcb) = pos;
   }
-#endif
-
-  return 0;
+  DPRINTF1("SEEK: fcb=0x%x offset=%d whence=%d -> %d\r\n", (uint32_t)req->fcb, offset, whence, pos);
+  return pos;
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 int op_filedate(struct dos_req_header *req)
 {
-#if 0
-  struct cmd_filedate *cmd = (struct cmd_filedate *)cbuf;
-  struct res_filedate *res = (struct res_filedate *)rbuf;
-  fdinfo_t *fi = fi_alloc(unit, cmd->fcb, false);
+  DPRINTF1("FILEDATE: ");
 
-  if (!fi) {
-    res->date = 0xffff;
-    res->time = _DOSE_BADF;
-    goto errout;
+  fdinfo_t *fi = fi_alloc(req->unit, (uint32_t)req->fcb, false);
+  if (fi == NULL) {
+    DPRINTF1("-> BADF\r\n");
+    return _DOSE_BADF;
   }
 
+  int res;
   int err;
-  if (cmd->time == 0 && cmd->date == 0) {   // 更新日時取得
+  if (req->status == 0) {   // 更新日時取得
     TYPE_STAT st;
-    if (FUNC_FSTAT(unit, &err, fi->fd, &st) < 0) {
-      res->date = 0xffff;
-      res->time = htobe32(conv_errno(err));
-    } else {
-      struct dos_filesinfo fi;
-      conv_statinfo(&st, &fi);
-      res->time = fi.time;
-      res->date = fi.date;
+    if (FUNC_FSTAT(req->unit, &err, fi->fd, &st) < 0) {
+      err = conv_errno(err);
+      DPRINTF1("-> %d\r\n", err);
+      return err;
     }
-  } else {                                  // 更新日時設定
-    uint16_t time = be16toh(cmd->time);
-    uint16_t date = be16toh(cmd->date);
-    if (FUNC_FILEDATE(unit, &err, fi->fd, time, date) < 0) {
-      res->date = 0xffff;
-      res->time = htobe32(conv_errno(err));
-    } else {
-      res->date = 0;
-      res->time = 0;
+    struct dos_filesinfo fi;
+    conv_statinfo(&st, &fi);
+    res = fi.time + (fi.date << 16);
+  } else {                  // 更新日時設定
+    if (FUNC_FILEDATE(req->unit, &err, fi->fd, req->status & 0xffff, req->status >> 16) < 0) {
+      err = conv_errno(err);
+      DPRINTF1("-> %d\r\n", err);
+      return err;
     }
+    res = 0;
   }
 
-errout:
-  DPRINTF1("FILEDATE: fcb=0x%08x 0x%04x 0x%04x -> 0x%04x 0x%04x\n", cmd->fcb, be16toh(cmd->date), be16toh(cmd->time), be16toh(res->date), be16toh(res->time));
-  return sizeof(*res);
+  DPRINTF1("fcb=0x%08x 0x%08x -> 0x%08x\r\n", (uint32_t)req->fcb, req->status, res);
+  return res;
 }
 
-
-case 0x4f: /* filedate */
-  {
-#if 0
-    struct cmd_filedate *cmd = &comp->cmd_filedate;
-    struct res_filedate *res = &comp->res_filedate;
-    cmd->command = req->command;
-    cmd->fcb = (uint32_t)req->fcb;
-    cmd->time = req->status & 0xffff;
-    cmd->date = req->status >> 16;
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-    DPRINTF1("FILEDATE: fcb=0x%08x 0x%04x 0x%04x -> 0x%04x 0x%04x\r\n", (uint32_t)req->fcb, req->status >> 16, req->status & 0xffff, res->date, res->time);
-    req->status = res->time + (res->date << 16);
-#endif
-    break;
-  }
-#endif
-  return 0;
-}
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+//****************************************************************************
+// Misc functions
+//****************************************************************************
 
 int op_dskfre(struct dos_req_header *req)
 {
-#if 0
-  struct cmd_dskfre *cmd = (struct cmd_dskfre *)cbuf;
-  struct res_dskfre *res = (struct res_dskfre *)rbuf;
-  uint64_t total;
-  uint64_t free;
+  int resfree = 0;
+  struct {
+    uint16_t freeclu;
+    uint16_t totalclu;
+    uint16_t clusect;
+    uint16_t sectsize;
+  } *res = (void *)req->addr;
 
   res->freeclu = res->totalclu = res->clusect = res->sectsize = 0;
-  res->res = 0;
 
-  if (rootpath[unit] != NULL) {
-    FUNC_STATFS(unit, NULL, rootpath[unit], &total, &free);
+  if (rootpath[req->unit] != NULL) {
+    uint64_t total;
+    uint64_t free;
+    FUNC_STATFS(req->unit, NULL, rootpath[req->unit], &total, &free);
     total = total > 0x7fffffff ? 0x7fffffff : total;
     free = free > 0x7fffffff ? 0x7fffffff : free;
     res->freeclu = htobe16(free / 32768);
     res->totalclu = htobe16(total /32768);
     res->clusect = htobe16(128);
     res->sectsize = htobe16(1024);
-    res->res = htobe32(free);
+    resfree = free;
   }
 
-  DPRINTF1("DSKFRE: free=%u total=%u clusect=%u sectsz=%u res=%d\n", be16toh(res->freeclu), be16toh(res->totalclu), be16toh(res->clusect), be16toh(res->sectsize), be32toh(res->res));
-  return sizeof(*res);
-}
-
-case 0x50: /* dskfre */
-  {
-#if 0
-    struct cmd_dskfre *cmd = &comp->cmd_dskfre;
-    struct res_dskfre *res = &comp->res_dskfre;
-    cmd->command = req->command;
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-
-    uint16_t *p = (uint16_t *)req->addr;
-    p[0] = res->freeclu;
-    p[1] = res->totalclu;
-    p[2] = res->clusect;
-    p[3] = res->sectsize;
-    DPRINTF1("DSKFRE: free=%u total=%u clusect=%u sectsz=%u res=%d\r\n", res->freeclu, res->totalclu, res->clusect, res->sectsize, res->res);
-    req->status = res->res;
-
-#endif
-    break;
-  }
-#endif
-  return 0;
+  DPRINTF1("DSKFRE: free=%u total=%u clusect=%u sectsz=%u res=%d\r\n", res->freeclu, res->totalclu, res->clusect, res->sectsize, resfree);
+  return resfree;
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
@@ -1383,69 +1176,51 @@ int op_getdpb(struct dos_req_header *req)
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-#if 0
-
-case 0x53: /* diskred */
-    DPRINTF1("DISKRED:\r\n");
-    req->status = 0;
-    break;
-
-#endif
+int op_diskred(struct dos_req_header *req)
+{
+  DPRINTF1("DISKRED:\r\n");
+  return 0;
+}
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-#if 0
-
-case 0x54: /* diskwrt */
-    DPRINTF1("DISKWRT:\r\n");
-    req->status = 0;
-    break;
-#endif
+int op_diskwrt(struct dos_req_header *req)
+{
+  DPRINTF1("DISKWRT:\r\n");
+  return 0;
+}
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-#if 0
-
-case 0x55: /* ioctl */
-    DPRINTF1("IOCTL:\r\n");
-    req->status = 0;
-    break;
-#endif
+int op_ioctl(struct dos_req_header *req)
+{
+  DPRINTF1("IOCTL:\r\n");
+  return 0;
+}
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-#if 0
-
-case 0x56: /* abort */
-    DPRINTF1("ABORT:\r\n");
-    req->status = 0;
-    break;
-#endif
+int op_abort(struct dos_req_header *req)
+{
+  DPRINTF1("ABORT:\r\n");
+  return 0;
+}
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-#if 0
-
-case 0x57: /* mediacheck */
-    DPRINTF1("MEDIACHECK:\r\n");
-    req->status = 0;
-    break;
-#endif
+int op_mediacheck(struct dos_req_header *req)
+{
+  DPRINTF1("MEDIACHECK:\r\n");
+  return 0;
+}
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-#if 0
-
-case 0x58: /* lock */
-    DPRINTF1("LOCK:\r\n");
-    req->status = 0;
-    break;
-
-  default:
-    break;
-  }
-#endif
-
+int op_lock(struct dos_req_header *req)
+{
+  DPRINTF1("LOCK:\r\n");
+  return 0;
+}
 
 //****************************************************************************
 // Device driver interrupt rountine
@@ -1507,57 +1282,61 @@ int interrupt(void)
     req->status  = op_nfiles(req);
     break;
 
-    #if 0
   case 0x49: /* create */
-    rsize = op_create(unit, cbuf, rbuf);
+    req->status = op_create(req);
     break;
   case 0x4a: /* open */
-    rsize = op_open(unit, cbuf, rbuf);
+    req->status = op_open(req);
     break;
   case 0x4b: /* close */
-    rsize = op_close(unit, cbuf, rbuf);
+    req->status = op_close(req);
     break;
   case 0x4c: /* read */
-    rsize = op_read(unit, cbuf, rbuf);
+    req->status = op_read(req);
     break;
   case 0x4d: /* write */
-    rsize = op_write(unit, cbuf, rbuf);
+    req->status = op_write(req);
     break;
   case 0x4e: /* seek */
     req->status = op_seek(req);
     break;
   case 0x4f: /* filedate */
-    rsize = op_filedate(unit, cbuf, rbuf);
-    break;
-#endif
-
-case 0x50: /* dskfre */
-//    req->status = op_dskfre(req);
-    req->status = 0;
+    req->status = op_filedate(req);
     break;
 
+  case 0x50: /* dskfre */
+    req->status = op_dskfre(req);
+    break;
   case 0x51: /* drvctrl */
     req->status = op_drvctrl(req);
     break;
-
   case 0x52: /* getdpb */
     req->status = op_getdpb(req);
     break;
 
   case 0x53: /* diskred */
+    req->status = op_diskred(req);
+    break;
   case 0x54: /* diskwrt */
+    req->status = op_diskwrt(req);
+    break;
   case 0x55: /* ioctl */
+    req->status = op_ioctl(req);
+    break;
   case 0x56: /* abort */
+    req->status = op_abort(req);
+    break;
   case 0x57: /* mediacheck */
+    req->status = op_mediacheck(req);
+    break;
   case 0x58: /* lock */
-    req->status = 0;
+    req->status = op_lock(req);
     break;
 
   default:
     req->status = 0;
     err = 0x1003;  // 不正なコマンドコード
   }
-
 
   return err;
 }
