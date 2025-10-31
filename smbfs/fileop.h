@@ -38,6 +38,8 @@
 
 #include "iconv_mini.h"
 
+struct smb2_context *getsmb2(int unit);
+
 //****************************************************************************
 // Data types
 //****************************************************************************
@@ -114,47 +116,40 @@ static inline int FUNC_CHMOD(int unit, int *err, const char *path, int mode)
 
 static inline int FUNC_STAT(int unit, int *err, const char *path, TYPE_STAT *st)
 {
-  const char *shpath;
-  struct smb2_context *smb2 = path2smb2(path, &shpath);
-  int r = smb2_stat(smb2, shpath, st);
+  struct smb2_context *smb2 = getsmb2(unit);
+  int r = smb2_stat(smb2, path, st);
   if (err)
     *err = -r;
   return r;
 }
 static inline int FUNC_MKDIR(int unit, int *err, const char *path)
 {
-  const char *shpath;
-  struct smb2_context *smb2 = path2smb2(path, &shpath);
-  int r = smb2_mkdir(smb2, shpath);
+  struct smb2_context *smb2 = getsmb2(unit);
+  int r = smb2_mkdir(smb2, path);
   if (err)
     *err = -r;
   return r;
 }
 static inline int FUNC_RMDIR(int unit, int *err, const char *path)
 {
-  const char *shpath;
-  struct smb2_context *smb2 = path2smb2(path, &shpath);
-  int r = smb2_rmdir(smb2, shpath);
+  struct smb2_context *smb2 = getsmb2(unit);
+  int r = smb2_rmdir(smb2, path);
   if (err)
     *err = -r;
   return r;
 }
 static inline int FUNC_RENAME(int unit, int *err, const char *pathold, const char *pathnew)
 {
-  const char *shpath;
-  const char *shpath2;
-  struct smb2_context *smb2 = path2smb2(pathold, &shpath);
-  path2smb2(pathnew, &shpath2);
-  int r = smb2_rename(smb2, shpath, shpath2);
+  struct smb2_context *smb2 = getsmb2(unit);
+  int r = smb2_rename(smb2, pathold, pathnew);
   if (err)
     *err = -r;
   return r;
 }
 static inline int FUNC_UNLINK(int unit, int *err, const char *path)
 {
-  const char *shpath;
-  struct smb2_context *smb2 = path2smb2(path, &shpath);
-  int r = smb2_unlink(smb2, shpath);
+  struct smb2_context *smb2 = getsmb2(unit);
+  int r = smb2_unlink(smb2, path);
   if (err)
     *err = -r;
   return r;
@@ -167,9 +162,8 @@ static inline int FUNC_UNLINK(int unit, int *err, const char *path)
 static inline TYPE_DIR FUNC_OPENDIR(int unit, int *err, const char *path)
 {
   union smb2dd dir = { .dd = DIR_BADDIR };
-  const char *shpath;
-  struct smb2_context *smb2 = path2smb2(path, &shpath);
-  dir.dir = smb2_opendir(smb2, shpath);
+  struct smb2_context *smb2 = getsmb2(unit);
+  dir.dir = smb2_opendir(smb2, path);
   if (dir.dir) {
     dir.smb2 = smb2;
   }
@@ -197,9 +191,8 @@ static inline int FUNC_CLOSEDIR(int unit, int *err, TYPE_DIR dir)
 static inline TYPE_FD FUNC_OPEN(int unit, int *err, const char *path, int flags)
 {
   union smb2fd fd = { .fd = FD_BADFD };
-  const char *shpath;
-  struct smb2_context *smb2 = path2smb2(path, &shpath);
-  fd.sfh = smb2_open(smb2, shpath, flags);
+  struct smb2_context *smb2 = getsmb2(unit);
+  fd.sfh = smb2_open(smb2, path, flags);
   if (fd.sfh) {
     fd.smb2 = smb2;
   }
@@ -292,9 +285,8 @@ static inline int FUNC_FILEDATE(int unit, int *err, TYPE_FD fd, uint16_t time, u
 static inline int FUNC_STATFS(int unit, int *err, const char *path, uint64_t *total, uint64_t *free)
 {
   struct smb2_statvfs sf;
-  const char *shpath;
-  struct smb2_context *smb2 = path2smb2(path, &shpath);
-  smb2_statvfs(smb2, shpath, &sf);
+  struct smb2_context *smb2 = getsmb2(unit);
+  smb2_statvfs(smb2, path, &sf);
   *total = sf.f_blocks * sf.f_bsize;
   *free = sf.f_bfree * sf.f_bsize;
   return 0;

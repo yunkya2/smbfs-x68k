@@ -22,8 +22,8 @@
  * THE SOFTWARE.
  */
 
-#ifndef _REMOTEDRV_H_
-#define _REMOTEDRV_H_
+#ifndef _SMBFS_H_
+#define _SMBFS_H_
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -41,11 +41,4 @@ void DNAMEPRINT(void *n, bool full, char *head);
 #define DNAMEPRINT(n, full, head)
 #endif
 
-extern jmp_buf jenv;
-extern int unit_base;
-
-void com_cmdres(void *wbuf, size_t wsize, void *rbuf, size_t rsize);
-int com_timeout(struct dos_req_header *req);
-int com_init(struct dos_req_header *req);
-
-#endif /* _REMOTEDRV_H_ */
+#endif /* _SMBFS_H_ */

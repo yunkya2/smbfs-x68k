@@ -26,11 +26,12 @@
 
 /* Human68k device driver header */
 
-    .text
+    .section    ".header","ax"
 
     .globl  devheader
     .extern reqheader
     .extern interrupt
+    .extern smbfs_data
 
 devheader:
     .long   -1                  // link pointer
@@ -39,6 +40,7 @@ devheader:
     .long   interrupt_asm       // interrupt routine entry point
     .ascii  CONFIG_DEVNAME      // device name
 
+    .long   smbfs_data          // device data pointer
 
 strategy:
     move.l  %a5,reqheader
