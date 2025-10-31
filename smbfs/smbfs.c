@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <ctype.h>
 #include <setjmp.h>
 #include <errno.h>
 #include <x68k/dos.h>
@@ -492,49 +493,124 @@ int op_chmod(struct dos_req_header *req)
   return err;
 }
 
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+//****************************************************************************
+// Directory operations
+//****************************************************************************
 
-#if 0
-static int dl_opendir(dirlist_t **dlp, int unit, struct cmd_files *cmd)
+// directory list management structure
+// Human68kから渡されるFILBUFのアドレスをキーとしてディレクトリリストを管理する
+typedef struct {
+  uint32_t filep;       // FILBUFアドレス
+  int unit;             // ドライブのユニット番号
+  bool isroot;          // ルートディレクトリか
+  bool isfirst;         // 最初のディレクトリエントリか
+  uint8_t attr;         // 検索するファイル属性
+  uint8_t fname[21];    // 検索するファイル名(ワイルドカード付き)
+  TYPE_DIR dir;         // ディレクトリディスクリプタ
+  hostpath_t hostpath;  // ホスト側検索パス名
+} dirlist_t;
+
+static dirlist_t *dl_store;
+static int dl_size = 0;
+
+// 不要になったバッファを解放する
+static void dl_free(dirlist_t *dl)
+{
+  // ディレクトリがオープンされていたら閉じる
+  if (dl->dir != DIR_BADDIR) {
+    FUNC_CLOSEDIR(dl->unit, NULL, dl->dir);
+  }
+  dl->dir = DIR_BADDIR;
+  dl->filep = 0;
+}
+
+// FILBUFに対応するバッファを探す
+static dirlist_t *dl_alloc(uint32_t filep, bool create)
+{
+  for (int i = 0; i < dl_size; i++) {
+    dirlist_t *dl = &dl_store[i];
+    if (dl->filep == filep) {
+      if (create) {         // 新規作成で同じFILBUFを見つけたらバッファを再利用
+        dl_free(dl);
+        dl->filep = filep;
+      }
+      return dl;
+    }
+  }
+  if (!create)
+    return NULL;
+
+  for (int i = 0; i < dl_size; i++) {
+    dirlist_t *dl = &dl_store[i];
+    if (dl->filep == 0) {   // 新規作成で未使用のバッファを見つけた
+      dl->filep = filep;
+      dl->dir = DIR_BADDIR;
+      return dl;
+    }
+  }
+  dl_size++;                // バッファが不足しているので拡張する
+  dirlist_t *dl_new = realloc(dl_store, sizeof(dirlist_t) * dl_size);
+  if (dl_new == NULL) {
+    dl_size--;
+    return NULL;
+  }
+  dl_store = dl_new;
+  dirlist_t *dl = &dl_store[dl_size - 1];
+  dl->filep = filep;
+  dl->dir = DIR_BADDIR;
+  return dl;
+}
+
+static void dl_freeall(int unit)
+{
+  for (int i = 0; i < dl_size; i++) {
+    dirlist_t *dl = &dl_store[i];
+    if (dl->filep != 0 && dl->unit == unit) {
+      dl_free(dl);
+    }
+  }
+}
+
+static int dl_opendir(dirlist_t **dlp, struct dos_req_header *req)
 {
   dirlist_t *dl;
-  int res = 0;
   *dlp = NULL;
+  struct dos_namestbuf *ns = req->addr;
 
-  if ((dl = dl_alloc(cmd->filep, true)) == NULL) {
+  if ((dl = dl_alloc(req->status, true)) == NULL) {
     return ENOMEM;
   }
 
-  if (conv_namebuf(unit, &cmd->path, false, &dl->hostpath) < 0) {
+  if (conv_namebuf(req->unit, req->addr, false, &dl->hostpath) < 0) {
     dl_free(dl);
     return ENOENT;
   }
-  dl->unit = unit;  
-  dl->isroot = strcmp(cmd->path.path, "\t") == 0;
+  dl->unit = req->unit;
+  dl->isroot = strcmp(ns->path, "\t") == 0;
   dl->isfirst = true;
-  dl->attr = cmd->attr;
+  dl->attr = req->attr;
 
   // (derived from HFS.java by Makoto Kamada)
   //検索するファイル名の順序を入れ替える
   //  主ファイル名1の末尾が'?'で主ファイル名2の先頭が'\0'のときは主ファイル名2を'?'で充填する
   memset(dl->fname, 0, sizeof(dl->fname));
-  memcpy(&dl->fname[0], cmd->path.name1, 8);    //主ファイル名1
-  if (cmd->path.name1[7] == '?' && cmd->path.name2[0] == '\0') {  //主ファイル名1の末尾が'?'で主ファイル名2の先頭が'\0'
+  memcpy(&dl->fname[0], ns->name1, 8);    //主ファイル名1
+  if (ns->name1[7] == '?' && ns->name2[0] == '\0') {  //主ファイル名1の末尾が'?'で主ファイル名2の先頭が'\0'
     memset(&dl->fname[8], '?', 10);           //主ファイル名2
   } else {
-    memcpy(&dl->fname[8], cmd->path.name2, 10); //主ファイル名2
+    memcpy(&dl->fname[8], ns->name2, 10); //主ファイル名2
   }
   for (int i = 17; i >= 0 && (dl->fname[i] == '\0' || dl->fname[i] == ' '); i--) {  //主ファイル名1+主ファイル名2の空き
     dl->fname[i] = '\0';
   }
-  memcpy(&dl->fname[18], cmd->path.ext, 3);     //拡張子
+  memcpy(&dl->fname[18], ns->ext, 3);     //拡張子
   for (int i = 20; i >= 18 && (dl->fname[i] == ' '); i--) { //拡張子の空き
     dl->fname[i] = '\0';
   }
   //検索するファイル名を小文字化する
   for (int i = 0; i < 21; i++) {
     int c = dl->fname[i];
-    if (0x81 <= c && c <= 0x9f || 0xe0 <= c && c <= 0xef) {  //SJISの1バイト目
+    if ((0x81 <= c && c <= 0x9f) || (0xe0 <= c && c <= 0xef)) {  //SJISの1バイト目
       i++;
     } else {
       dl->fname[i] = tolower(dl->fname[i]);
@@ -548,7 +624,7 @@ static int dl_opendir(dirlist_t **dlp, int unit, struct cmd_files *cmd)
 
   //ディレクトリを開いてディスクリプタを得る
   int err;
-  if ((dl->dir = FUNC_OPENDIR(unit, &err, dl->hostpath)) == DIR_BADDIR) {
+  if ((dl->dir = FUNC_OPENDIR(req->unit, &err, dl->hostpath)) == DIR_BADDIR) {
     return err;
   }
 
@@ -580,7 +656,7 @@ int dl_readdir(dirlist_t *dl, void *v)
 
   dl->isfirst = false;
   //ディレクトリの一覧から属性とファイル名の条件に合うものを選ぶ
-  while (d = FUNC_READDIR(dl->unit, NULL, dl->dir)) {
+  while ((d = FUNC_READDIR(dl->unit, NULL, dl->dir))) {
     char *childName = DIRENT_NAME(d);
 
     if (dl->isroot) {  //ルートディレクトリのとき
@@ -602,7 +678,7 @@ int dl_readdir(dirlist_t *dl, void *v)
     for (int i = 0; i < sizeof(fi->name); i++) {
       if (!(c = fi->name[i]))
         break;
-      if (0x81 <= c && c <= 0x9f || 0xe0 <= c && c <= 0xef) {  //SJISの1バイト目
+      if ((0x81 <= c && c <= 0x9f) || (0xe0 <= c && c <= 0xef)) {  //SJISの1バイト目
         i++;
         continue;
       }
@@ -630,7 +706,7 @@ int dl_readdir(dirlist_t *dl, void *v)
     uint8_t w2[21] = { 0 };
     memcpy(&w2[0], &b[0], m);         //主ファイル名
     if (b[m] == '.')
-      strncpy(&w2[18], &b[m + 1], 3); //拡張子
+      strncpy((char *)&w2[18], &b[m + 1], 3); //拡張子
 
     for (int i = 0; i < 21; i++)
       DPRINTF2("%c", w2[i] == 0 ? '_' : w2[i]);
@@ -646,7 +722,7 @@ int dl_readdir(dirlist_t *dl, void *v)
         if (d != '?' && ('A' <= c && c <= 'Z' ? c | f : c) != d) {  //検索するファイル名の'?'以外の部分がマッチしない。SJISの2バイト目でなければ小文字化してから比較する
           break;
         }
-        f = f != 0x00 && (0x81 <= c && c <= 0x9f || 0xe0 <= c && c <= 0xef) ? 0x00 : 0x20;  //このバイトがSJISの2バイト目ではなくてSJISの1バイト目ならば次のバイトはSJISの2バイト目
+        f = f != 0x00 && ((0x81 <= c && c <= 0x9f) || (0xe0 <= c && c <= 0xef)) ? 0x00 : 0x20;  //このバイトがSJISの2バイト目ではなくてSJISの1バイト目ならば次のバイトはSJISの2バイト目
       }
       if (i < 21) { //ファイル名がマッチしなかった
         continue;
@@ -679,6 +755,8 @@ int dl_readdir(dirlist_t *dl, void *v)
   dl_free(dl);
   return 0;   // もうファイルがない
 }
+
+#if 0
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
