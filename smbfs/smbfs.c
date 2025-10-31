@@ -104,103 +104,6 @@ void DNAMEPRINT(void *n, bool full, char *head)
 //****************************************************************************
 
 #if 0
-ssize_t send_read(uint32_t fcb, char *buf, uint32_t pos, size_t len)
-{
-  struct cmd_read *cmd = &comp->cmd_read;
-  struct res_read *res = &comp->res_read;
-  ssize_t total = 0;
-
-  while (len > 0) {
-    size_t size = len > sizeof(res->data) ? sizeof(res->data) : len;
-    cmd->command = 0x4c; /* read */
-    cmd->fcb = (uint32_t)fcb;
-    cmd->pos = pos;
-    cmd->len = size;
-
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-
-    DPRINTF1(" read: addr=0x%08x pos=%d len=%d size=%d\r\n", (uint32_t)buf, pos, len, res->len);
-    if (res->len < 0)
-      return res->len;
-    if (res->len == 0)
-      break;
-
-    memcpy(buf, res->data, res->len);
-    buf += res->len;
-    total += res->len;
-    pos += res->len;
-    len -= res->len;
-  }
-  DPRINTF1(" read: total=%d\r\n", total);
-  return total;
-}
-
-ssize_t send_write(uint32_t fcb, char *buf, uint32_t pos, size_t len)
-{
-  struct cmd_write *cmd = &comp->cmd_write;
-  struct res_write *res = &comp->res_write;
-  ssize_t total = 0;
-
-  do {
-    size_t size = len > sizeof(cmd->data) ? sizeof(cmd->data) : len;
-    cmd->command = 0x4d; /* write */
-    cmd->fcb = (uint32_t)fcb;
-    cmd->pos = pos;
-    cmd->len = size;
-    memcpy(cmd->data, buf, size);
-
-    com_cmdres(cmd, offsetof(struct cmd_write, data) + size, res, sizeof(*res));
-
-    DPRINTF1(" write: addr=0x%08x pos=%d len=%d size=%d\r\n", (uint32_t)buf, pos, len, res->len);
-    if (res->len < 0)
-      return res->len;
-    buf += res->len;
-    total += res->len;
-    pos += res->len;
-    len -= res->len;
-  } while (len > 0);
-  DPRINTF1(" write: total=%d\r\n", total);
-  return total;
-}
-
-struct dcache {
-  uint32_t fcb;
-  uint32_t pos;
-  int16_t len;
-  bool dirty;
-  uint8_t cache[CONFIG_DATASIZE];
-} dcache[CONFIG_NDCACHE];
-
-struct dcache *dcache_alloc(uint32_t fcb)
-{
-  for (int i = 0; i < CONFIG_NDCACHE; i++) {
-    if (dcache[i].fcb == fcb)
-      return &dcache[i];
-  }
-  for (int i = 0; i < CONFIG_NDCACHE; i++) {
-    if (dcache[i].fcb == 0)
-      return &dcache[i];
-  }
-  return NULL;
-}
-
-int dcache_flash(uint32_t fcb, bool clean)
-{
-  int res = 0;
-  for (int i = 0; i < CONFIG_NDCACHE; i++) {
-    if (dcache[i].fcb == fcb) {
-      if (dcache[i].dirty) {
-        if (send_write(dcache[i].fcb, dcache[i].cache, dcache[i].pos, dcache[i].len) < 0)
-          res = -1;
-        dcache[i].dirty = false;
-      }
-      if (clean)
-        dcache[i].fcb = 0;
-    }
-  }
-  return res;
-}
-
 #if CONFIG_NFILEINFO > 1
 struct fcache {
   uint32_t filep;
@@ -377,13 +280,6 @@ static int my_atoi(char *p)
   return res;
 }
 
-int com_timeout(struct dos_req_header *req)
-{
-  DPRINTF1("command timeout\r\n");
-  req->status = -1;
-  return 0x1002;
-}
-
 int com_init(struct dos_req_header *req)
 {
   int units = 1;
@@ -502,10 +398,42 @@ int op_rmdir(struct dos_req_header *req)
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
+int op_rename(struct dos_req_header *req)
+{
 #if 0
-  case 0x44: /* rename */
-  {
-#if 0
+  struct cmd_rename *cmd = (struct cmd_rename *)cbuf;
+  struct res_rename *res = (struct res_rename *)rbuf;
+  hostpath_t pathold;
+  hostpath_t pathnew;
+
+  res->res = 0;
+
+  if (conv_namebuf(unit, &cmd->path_old, true, &pathold) < 0) {
+    res->res = _DOSE_NODIR;
+    goto errout;
+  }
+  if (conv_namebuf(unit, &cmd->path_new, true, &pathnew) < 0) {
+    res->res = _DOSE_NODIR;
+    goto errout;
+  }
+
+  int err;
+  if (FUNC_RENAME(unit, &err, pathold, pathnew) < 0) {
+    switch (err) {
+    case ENOTEMPTY:
+      res->res = _DOSE_CANTREN;
+      break;
+    default:
+      res->res = conv_errno(err);
+      break;
+    }
+  }
+errout:
+  DPRINTF1("RENAME: %s to %s  -> %d\n", pathold, pathnew, res->res);
+  return sizeof(*res);
+}
+
+{
     struct cmd_rename *cmd = &comp->cmd_rename;
     struct res_rename *res = &comp->res_rename;
     cmd->command = req->command;
@@ -516,13 +444,39 @@ int op_rmdir(struct dos_req_header *req)
     DNAMEPRINT((void *)req->status, true, " to ");
     DPRINTF1(" -> %d\r\n", res->res);
     req->status = res->res;
-#endif
     break;
+#endif
+  return 0;
+}
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_delete(struct dos_req_header *req)
+{
+#if 0
+  struct cmd_dirop *cmd = (struct cmd_dirop *)cbuf;
+  struct res_dirop *res = (struct res_dirop *)rbuf;
+  hostpath_t path;
+
+  res->res = 0;
+
+  if (conv_namebuf(unit, &cmd->path, true, &path) < 0) {
+    res->res = _DOSE_NODIR;
+    goto errout;
   }
+
+  int err;
+  if (FUNC_UNLINK(unit, &err, path) < 0) {
+    res->res = conv_errno(err);
+  }
+errout:
+  DPRINTF1("DELETE: %s -> %d\n", path, res->res);
+  return sizeof(*res);
+}
+
 
   case 0x45: /* delete */
   {
-#if 0
     struct cmd_dirop *cmd = &comp->cmd_dirop;
     struct res_dirop *res = &comp->res_dirop;
     cmd->command = req->command;
@@ -531,11 +485,54 @@ int op_rmdir(struct dos_req_header *req)
     DNAMEPRINT(req->addr, true, "DELETE: ");
     DPRINTF1(" -> %d\r\n", res->res);
     req->status = res->res;
-#endif
     break;
   }
 
-  case 0x46: /* chmod */
+
+#endif
+  return 0;
+}
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_chmod(struct dos_req_header *req)
+{
+#if 0
+  struct cmd_chmod *cmd = (struct cmd_chmod *)cbuf;
+  struct res_chmod *res = (struct res_chmod *)rbuf;
+  hostpath_t path;
+  TYPE_STAT st;
+
+  res->res = 0;
+
+  if (conv_namebuf(unit, &cmd->path, true, &path) < 0) {
+    res->res = _DOSE_NODIR;
+    goto errout;
+  }
+
+  int err;
+  if (FUNC_STAT(unit, &err, path, &st) < 0) {
+    res->res = conv_errno(err);
+  } else {
+    res->res = FUNC_FILEMODE_ATTR(&st);
+  }
+  if (cmd->attr != 0xff) {
+    if (FUNC_CHMOD(unit, &err, path, FUNC_ATTR_FILEMODE(cmd->attr, &st)) < 0) {
+      res->res = conv_errno(err);
+    } else {
+      res->res = 0;
+    }
+  }
+errout:
+  if (res->res < 0)
+    DPRINTF1("CHMOD: %s 0x%02x -> %d\n", path, cmd->attr, res->res);
+  else
+    DPRINTF1("CHMOD: %s 0x%02x -> 0x%02x\n", path, cmd->attr, res->res);
+  return sizeof(*res);
+}
+
+
+case 0x46: /* chmod */
   {
 #if 0
     struct cmd_chmod *cmd = &comp->cmd_chmod;
@@ -550,8 +547,256 @@ int op_rmdir(struct dos_req_header *req)
 #endif
     break;
   }
+#endif
+  return 0;
+}
 
-  case 0x47: /* files */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+#if 0
+static int dl_opendir(dirlist_t **dlp, int unit, struct cmd_files *cmd)
+{
+  dirlist_t *dl;
+  int res = 0;
+  *dlp = NULL;
+
+  if ((dl = dl_alloc(cmd->filep, true)) == NULL) {
+    return ENOMEM;
+  }
+
+  if (conv_namebuf(unit, &cmd->path, false, &dl->hostpath) < 0) {
+    dl_free(dl);
+    return ENOENT;
+  }
+  dl->unit = unit;  
+  dl->isroot = strcmp(cmd->path.path, "\t") == 0;
+  dl->isfirst = true;
+  dl->attr = cmd->attr;
+
+  // (derived from HFS.java by Makoto Kamada)
+  //検索するファイル名の順序を入れ替える
+  //  主ファイル名1の末尾が'?'で主ファイル名2の先頭が'\0'のときは主ファイル名2を'?'で充填する
+  memset(dl->fname, 0, sizeof(dl->fname));
+  memcpy(&dl->fname[0], cmd->path.name1, 8);    //主ファイル名1
+  if (cmd->path.name1[7] == '?' && cmd->path.name2[0] == '\0') {  //主ファイル名1の末尾が'?'で主ファイル名2の先頭が'\0'
+    memset(&dl->fname[8], '?', 10);           //主ファイル名2
+  } else {
+    memcpy(&dl->fname[8], cmd->path.name2, 10); //主ファイル名2
+  }
+  for (int i = 17; i >= 0 && (dl->fname[i] == '\0' || dl->fname[i] == ' '); i--) {  //主ファイル名1+主ファイル名2の空き
+    dl->fname[i] = '\0';
+  }
+  memcpy(&dl->fname[18], cmd->path.ext, 3);     //拡張子
+  for (int i = 20; i >= 18 && (dl->fname[i] == ' '); i--) { //拡張子の空き
+    dl->fname[i] = '\0';
+  }
+  //検索するファイル名を小文字化する
+  for (int i = 0; i < 21; i++) {
+    int c = dl->fname[i];
+    if (0x81 <= c && c <= 0x9f || 0xe0 <= c && c <= 0xef) {  //SJISの1バイト目
+      i++;
+    } else {
+      dl->fname[i] = tolower(dl->fname[i]);
+    }
+  }
+
+  DPRINTF2("dl_opendir: %02x ", dl->attr);
+  for (int i = 0; i < 21; i++)
+    DPRINTF2("%c", dl->fname[i] == 0 ? '_' : dl->fname[i]);
+  DPRINTF2("\n");
+
+  //ディレクトリを開いてディスクリプタを得る
+  int err;
+  if ((dl->dir = FUNC_OPENDIR(unit, &err, dl->hostpath)) == DIR_BADDIR) {
+    return err;
+  }
+
+  *dlp = dl;
+  return 0;
+}
+
+int dl_readdir(dirlist_t *dl, void *v)
+{
+  TYPE_DIRENT *d;
+  struct dos_filesinfo *fi = (struct dos_filesinfo *)v;
+
+  if (dl->isfirst && dl->isroot && (dl->attr & 0x08) != 0 &&
+      dl->fname[0] == '?' && dl->fname[18] == '?') {    //検索するファイル名が*.*のとき
+    //ボリューム名エントリを作る
+    fi->atr = 0x08;   //ボリューム名
+    fi->time = fi->date = 0;
+    fi->filelen = 0;
+    // ファイル名をSJISに変換する
+    char *dst_buf = fi->name;
+    size_t dst_len = sizeof(fi->name) - 2;
+    char *src_buf = dl->hostpath;
+    size_t src_len = strlen(dl->hostpath);
+    FUNC_ICONV_U2S(&src_buf, &src_len, &dst_buf, &dst_len);
+    *dst_buf = '\0';
+    dl->isfirst = false;
+    return 1;
+  }
+
+  dl->isfirst = false;
+  //ディレクトリの一覧から属性とファイル名の条件に合うものを選ぶ
+  while (d = FUNC_READDIR(dl->unit, NULL, dl->dir)) {
+    char *childName = DIRENT_NAME(d);
+
+    if (dl->isroot) {  //ルートディレクトリのとき
+      if (strcmp(childName, ".") == 0 || strcmp(childName, "..") == 0) {  //.と..を除く
+        continue;
+      }
+    }
+
+    // ファイル名をSJISに変換する
+    char *dst_buf = fi->name;
+    size_t dst_len = sizeof(fi->name) - 1;
+    char *src_buf = childName;
+    size_t src_len = strlen(childName);
+    if (FUNC_ICONV_U2S(&src_buf, &src_len, &dst_buf, &dst_len) < 0) {
+      continue;
+    }
+    *dst_buf = '\0';
+    uint8_t c;
+    for (int i = 0; i < sizeof(fi->name); i++) {
+      if (!(c = fi->name[i]))
+        break;
+      if (0x81 <= c && c <= 0x9f || 0xe0 <= c && c <= 0xef) {  //SJISの1バイト目
+        i++;
+        continue;
+      }
+      if (c <= 0x1f ||  //変換できない文字または制御コード
+          (c == '-' && i == 0) ||  //ファイル名の先頭に使えない文字
+          strchr("/\\,;<=>[]|", c) != NULL) {  //ファイル名に使えない文字
+        break;
+      }
+    }
+    if (c) {  //ファイル名に使えない文字がある
+      continue;
+    }
+
+    //ファイル名を分解する
+    char *b = fi->name;
+    int k = strlen(b);
+    int m = (b[k - 1] == '.' ? k :  //name.
+             k >= 3 && b[k - 2] == '.' ? k - 2 :  //name.e
+             k >= 4 && b[k - 3] == '.' ? k - 3 :  //name.ex
+             k >= 5 && b[k - 4] == '.' ? k - 4 :  //name.ext
+             k);  //主ファイル名の直後。拡張子があるときは'.'の位置、ないときはk
+    if (m > 18) {  //主ファイル名が長すぎる
+      continue;
+    }
+    uint8_t w2[21] = { 0 };
+    memcpy(&w2[0], &b[0], m);         //主ファイル名
+    if (b[m] == '.')
+      strncpy(&w2[18], &b[m + 1], 3); //拡張子
+
+    for (int i = 0; i < 21; i++)
+      DPRINTF2("%c", w2[i] == 0 ? '_' : w2[i]);
+    DPRINTF2("\n");
+
+    //ファイル名を比較する
+    {
+      int f = 0x20;  //0x00=次のバイトはSJISの2バイト目,0x20=次のバイトはSJISの2バイト目ではない
+      int i;
+      for (i = 0; i < 21; i++) {
+        int c = w2[i];
+        int d = dl->fname[i];
+        if (d != '?' && ('A' <= c && c <= 'Z' ? c | f : c) != d) {  //検索するファイル名の'?'以外の部分がマッチしない。SJISの2バイト目でなければ小文字化してから比較する
+          break;
+        }
+        f = f != 0x00 && (0x81 <= c && c <= 0x9f || 0xe0 <= c && c <= 0xef) ? 0x00 : 0x20;  //このバイトがSJISの2バイト目ではなくてSJISの1バイト目ならば次のバイトはSJISの2バイト目
+      }
+      if (i < 21) { //ファイル名がマッチしなかった
+        continue;
+      }
+    }
+
+    //属性、時刻、日付、ファイルサイズを取得する
+    hostpath_t fullpath;
+    strcpy(fullpath, dl->hostpath);
+    int len = strlen(fullpath);
+    if (len > 0 && fullpath[len - 1] != '/') {
+      strncat(fullpath, "/", sizeof(fullpath) - 1);
+    }
+    strncat(fullpath, childName, sizeof(fullpath) - 1);
+    TYPE_STAT st;
+    if (FUNC_STAT(dl->unit, NULL, fullpath, &st) < 0) {  // ファイル情報を取得できなかった
+      continue;
+    }
+    if (0xffffffffL < STAT_SIZE(&st)) {  //4GB以上のファイルは検索できないことにする
+      continue;
+    }
+    conv_statinfo(&st, fi);
+    if ((fi->atr & dl->attr) == 0) {  //属性がマッチしない
+      continue;
+    }
+
+    return 1;
+  }
+
+  dl_free(dl);
+  return 0;   // もうファイルがない
+}
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_files(int unit, uint8_t *cbuf, uint8_t *rbuf)
+{
+  struct cmd_files *cmd = (struct cmd_files *)cbuf;
+  struct res_files *res = (struct res_files *)rbuf;
+  dirlist_t *dl;
+
+  res->res = _DOSE_NOMORE;
+#if CONFIG_NFILEINFO > 1
+  res->num = 0;
+#endif
+
+  int err = dl_opendir(&dl, unit, cmd);
+  if (err) {
+    switch (err) {
+    case ENOENT:
+      res->res = _DOSE_NODIR;    //ディレクトリが存在しない場合に_DOSE_NOENTを返すと正常動作しない
+      break;
+    default:
+      res->res = conv_errno(err);
+      break;
+    }
+    goto errout;
+  }
+
+  int n = CONFIG_NFILEINFO;
+#if CONFIG_NFILEINFO > 1
+  n = n > cmd->num ? cmd->num : n;
+#endif
+  
+  for (int i = 0; i < n; i++) {
+    if (dl_readdir(dl, &res->file[i]) == 0) {
+      break;
+    }
+#if CONFIG_NFILEINFO > 1
+    res->num++;
+#endif
+    res->res = 0;
+    DPRINTF1("(%d/%d) %s\n", i, n, res->file[i].name);
+  }
+
+errout:
+#if CONFIG_NFILEINFO > 1
+  DPRINTF1("FILES: 0x%08x 0x%02x %d %s -> ", cmd->filep, cmd->attr, cmd->num, dl->hostpath);
+#else
+  DPRINTF1("FILES: 0x%08x 0x%02x %s -> ", cmd->filep, cmd->attr, dl->hostpath);
+#endif
+  DPRINTF1("%d\n", res->res);
+
+  return sizeof(*res);
+}
+
+
+
+#if 0
+
+case 0x47: /* files */
   {
 #if 0
     struct cmd_files *cmd = &comp->cmd_files;
@@ -592,8 +837,54 @@ int op_rmdir(struct dos_req_header *req)
 #endif
     break;
   }
+#endif
+#endif
 
-  case 0x48: /* nfiles */
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_nfiles(struct dos_req_header *req)
+{
+#if 0
+  struct cmd_nfiles *cmd = (struct cmd_nfiles *)cbuf;
+  struct res_nfiles *res = (struct res_nfiles *)rbuf;
+  dirlist_t *dl;
+
+  res->res = _DOSE_NOMORE;
+#if CONFIG_NFILEINFO > 1
+  res->num = 0;
+#endif
+
+  if (dl = dl_alloc(cmd->filep, false)) {
+    int n = CONFIG_NFILEINFO;
+#if CONFIG_NFILEINFO > 1
+    n = n > cmd->num ? cmd->num : n;
+#endif
+
+    for (int i = 0; i < n; i++) {
+      if (dl_readdir(dl, &res->file[i]) == 0) {
+        break;
+      }
+#if CONFIG_NFILEINFO > 1
+      res->num++;
+#endif
+      res->res = 0;
+      DPRINTF1("(%d/%d) %s\n", i, n, res->file[i].name);
+    }
+  }
+
+#if CONFIG_NFILEINFO > 1
+  DPRINTF1("NFILES: 0x%08x %d -> ", cmd->filep, cmd->num);
+#else
+  DPRINTF1("NFILES: 0x%08x -> ", cmd->filep);
+#endif
+  DPRINTF1("%d\n", res->res);
+
+  return sizeof(*res);
+}
+
+
+case 0x48: /* nfiles */
   {
 #if 0
     struct cmd_nfiles *cmd = &comp->cmd_nfiles;
@@ -642,10 +933,53 @@ out_nfiles:
 #endif
     break;
   }
+#endif
+  return 0;
+}
 
-  case 0x49: /* create */
-  {
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_create(struct dos_req_header *req)
+{
 #if 0
+  struct cmd_create *cmd = (struct cmd_create *)cbuf;
+  struct res_create *res = (struct res_create *)rbuf;
+  hostpath_t path;
+  TYPE_FD filefd;
+
+  res->res = 0;
+
+  if (conv_namebuf(unit, &cmd->path, true, &path) < 0) {
+    res->res = _DOSE_NODIR;
+    goto errout;
+  }
+
+  int mode = O_CREAT|O_RDWR|O_TRUNC|O_BINARY;
+  mode |= cmd->mode ? 0 : O_EXCL;
+  int err;
+  if ((filefd = FUNC_OPEN(unit, &err, path, mode)) == FD_BADFD) {
+    switch (err) {
+    case ENOSPC:
+      res->res = _DOSE_DIRFULL;
+      break;
+    default:
+      res->res = conv_errno(err);
+      break;
+    }
+  } else {
+    fdinfo_t *fi = fi_alloc(unit, cmd->fcb, true);
+    fi->fd = filefd;
+    fi->pos = 0;
+  }
+errout:
+  DPRINTF1("CREATE: fcb=0x%08x attr=0x%02x mode=%d %s -> %d\n", cmd->fcb, cmd->attr, cmd->mode, path, res->res);
+  return sizeof(*res);
+}
+
+
+case 0x49: /* create */
+  {
+
     struct cmd_create *cmd = &comp->cmd_create;
     struct res_create *res = &comp->res_create;
     cmd->command = req->command;
@@ -658,11 +992,71 @@ out_nfiles:
     DNAMEPRINT(req->addr, true, "CREATE: ");
     DPRINTF1(" fcb=0x%08x attr=0x%02x mode=%d -> %d\r\n", (uint32_t)req->fcb, req->attr, req->status, res->res);
     req->status = res->res;
-#endif
+
     break;
   }
+#endif
+  return 0;
+}
 
-  case 0x4a: /* open */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_open(struct dos_req_header *req)
+{
+#if 0
+  struct cmd_open *cmd = (struct cmd_open *)cbuf;
+  struct res_open *res = (struct res_open *)rbuf;
+  hostpath_t path;
+  int mode;
+  TYPE_FD filefd;
+
+  res->res = 0;
+
+  if (conv_namebuf(unit, &cmd->path, true, &path) < 0) {
+    res->res = _DOSE_NODIR;
+    goto errout;
+  }
+
+  switch (cmd->mode) {
+  case 0:
+    mode = O_RDONLY|O_BINARY;
+    break;
+  case 1:
+    mode = O_WRONLY|O_BINARY;
+    break;
+  case 2:
+    mode = O_RDWR|O_BINARY;
+    break;
+  default:
+    res->res = _DOSE_ILGARG;
+    goto errout;
+  }
+
+  int err;
+  if ((filefd = FUNC_OPEN(unit, &err, path, mode)) == FD_BADFD) {
+    switch (err) {
+    case EINVAL:
+      res->res = _DOSE_ILGARG;
+      break;
+    default:
+      res->res = conv_errno(err);
+      break;
+    }
+  } else {
+    fdinfo_t *fi = fi_alloc(unit, cmd->fcb, true);
+    fi->fd = filefd;
+    fi->pos = 0;
+    uint32_t len = FUNC_LSEEK(unit, NULL, filefd, 0, SEEK_END);
+    FUNC_LSEEK(unit, NULL, filefd, 0, SEEK_SET);
+    res->size = htobe32(len);
+  }
+errout:
+  DPRINTF1("OPEN: fcb=0x%08x mode=%d %s -> %d %d\n", cmd->fcb, cmd->mode, path, res->res, be32toh(res->size));
+  return sizeof(*res);
+}
+
+
+case 0x4a: /* open */
   {
 #if 0
     struct cmd_open *cmd = &comp->cmd_open;
@@ -680,8 +1074,43 @@ out_nfiles:
 #endif
     break;
   }
+#endif
+  return 0;
+}
 
-  case 0x4b: /* close */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_close(struct dos_req_header *req)
+{
+#if 0
+  struct cmd_close *cmd = (struct cmd_close *)cbuf;
+  struct res_close *res = (struct res_close *)rbuf;
+  fdinfo_t *fi = fi_alloc(unit, cmd->fcb, false);
+  res->res = 0;
+
+  if (!fi) {
+    res->res = _DOSE_BADF;
+    goto errout;
+  }
+
+  int err;
+  if (FUNC_CLOSE(unit, &err, fi->fd) < 0) {
+    res->res = conv_errno(err);
+  }
+
+errout:
+  fi_free(cmd->fcb);
+  DPRINTF1("CLOSE: fcb=0x%08x\n", cmd->fcb);
+  return sizeof(*res);
+}
+
+void op_closeall(int unit)
+{
+  fi_freeall(unit);
+}
+
+
+case 0x4b: /* close */
   {
 #if 0
     dcache_flash((uint32_t)req->fcb, true);
@@ -696,8 +1125,50 @@ out_nfiles:
 #endif
     break;
   }
+#endif
+  return 0;
+}
 
-  case 0x4c: /* read */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_read(struct dos_req_header *req)
+{
+#if 0
+  struct cmd_read *cmd = (struct cmd_read *)cbuf;
+  struct res_read *res = (struct res_read *)rbuf;
+  fdinfo_t *fi = fi_alloc(unit, cmd->fcb, false);
+  uint32_t pos = be32toh(cmd->pos);
+  size_t len = be16toh(cmd->len);
+  ssize_t bytes = 0;
+
+  if (!fi) {
+    res->len = _DOSE_BADF;
+    goto errout;
+  }
+
+  int err;
+  if (fi->pos != pos) {
+    if (FUNC_LSEEK(unit, &err, fi->fd, pos, SEEK_SET) < 0) {
+      res->len = htobe32(conv_errno(err));
+      goto errout;
+    }
+  }
+  bytes = FUNC_READ(unit, &err, fi->fd, res->data, len);
+  if (bytes < 0) {
+    res->len = htobe16(conv_errno(err));
+    bytes = 0;
+  } else {
+    res->len = htobe16(bytes);
+    fi->pos += bytes;
+  }
+
+errout:
+  DPRINTF1("READ: fcb=0x%08x %d %d -> %d\n", cmd->fcb, pos, len, bytes);
+  return offsetof(struct res_read, data) + bytes;
+}
+
+
+case 0x4c: /* read */
   {
 #if 0
     dcache_flash((uint32_t)req->fcb, false);
@@ -755,8 +1226,57 @@ errout_read:
 #endif
     break;
   }
+#endif
+  return 0;
+}
 
-  case 0x4d: /* write */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_write(struct dos_req_header *req)
+{
+#if 0
+  struct cmd_write *cmd = (struct cmd_write *)cbuf;
+  struct res_write *res = (struct res_write *)rbuf;
+  fdinfo_t *fi = fi_alloc(unit, cmd->fcb, false);
+  uint32_t pos = be32toh(cmd->pos);
+  size_t len = be16toh(cmd->len);
+  ssize_t bytes;
+
+  if (!fi) {
+    res->len = _DOSE_BADF;
+    goto errout;
+  }
+
+  int err;
+  if (len == 0) {     // 0バイトのwriteはファイル長を切り詰める
+    if (FUNC_FTRUNCATE(unit, &err, fi->fd, pos) < 0) {
+      res->len = htobe16(conv_errno(err));
+    } else {
+      res->len = 0;
+    }
+  } else {
+    if (fi->pos != pos) {
+      if (FUNC_LSEEK(unit, &err, fi->fd, pos, SEEK_SET) < 0) {
+        res->len = htobe32(conv_errno(err));
+        goto errout;
+      }
+    }
+    bytes = FUNC_WRITE(unit, &err, fi->fd, cmd->data, len);
+    if (bytes < 0) {
+      res->len = htobe16(conv_errno(err));
+    } else {
+      res->len = htobe16(bytes);
+      fi->pos += bytes;
+    }
+  }
+
+errout:
+  DPRINTF1("WRITE: fcb=0x%08x %d %d -> %d\n", cmd->fcb, pos, len, bytes);
+  return sizeof(*res);
+}
+
+
+case 0x4d: /* write */
   {
 #if 0
     uint32_t *pp = &dos_fcb_fpos(req->fcb);
@@ -806,8 +1326,18 @@ okout_write:
 #endif
     break;
   }
+#endif
+  return 0;
+}
 
-  case 0x4e: /* seek */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_seek(struct dos_req_header *req)
+{
+
+  #if 0
+
+case 0x4e: /* seek */
   {
 #if 0
     dcache_flash((uint32_t)req->fcb, false);
@@ -827,8 +1357,57 @@ okout_write:
 #endif
     break;
   }
+#endif
 
-  case 0x4f: /* filedate */
+  return 0;
+}
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_filedate(struct dos_req_header *req)
+{
+#if 0
+  struct cmd_filedate *cmd = (struct cmd_filedate *)cbuf;
+  struct res_filedate *res = (struct res_filedate *)rbuf;
+  fdinfo_t *fi = fi_alloc(unit, cmd->fcb, false);
+
+  if (!fi) {
+    res->date = 0xffff;
+    res->time = _DOSE_BADF;
+    goto errout;
+  }
+
+  int err;
+  if (cmd->time == 0 && cmd->date == 0) {   // 更新日時取得
+    TYPE_STAT st;
+    if (FUNC_FSTAT(unit, &err, fi->fd, &st) < 0) {
+      res->date = 0xffff;
+      res->time = htobe32(conv_errno(err));
+    } else {
+      struct dos_filesinfo fi;
+      conv_statinfo(&st, &fi);
+      res->time = fi.time;
+      res->date = fi.date;
+    }
+  } else {                                  // 更新日時設定
+    uint16_t time = be16toh(cmd->time);
+    uint16_t date = be16toh(cmd->date);
+    if (FUNC_FILEDATE(unit, &err, fi->fd, time, date) < 0) {
+      res->date = 0xffff;
+      res->time = htobe32(conv_errno(err));
+    } else {
+      res->date = 0;
+      res->time = 0;
+    }
+  }
+
+errout:
+  DPRINTF1("FILEDATE: fcb=0x%08x 0x%04x 0x%04x -> 0x%04x 0x%04x\n", cmd->fcb, be16toh(cmd->date), be16toh(cmd->time), be16toh(res->date), be16toh(res->time));
+  return sizeof(*res);
+}
+
+
+case 0x4f: /* filedate */
   {
 #if 0
     struct cmd_filedate *cmd = &comp->cmd_filedate;
@@ -843,8 +1422,39 @@ okout_write:
 #endif
     break;
   }
+#endif
+  return 0;
+}
 
-  case 0x50: /* dskfre */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_dskfre(struct dos_req_header *req)
+{
+#if 0
+  struct cmd_dskfre *cmd = (struct cmd_dskfre *)cbuf;
+  struct res_dskfre *res = (struct res_dskfre *)rbuf;
+  uint64_t total;
+  uint64_t free;
+
+  res->freeclu = res->totalclu = res->clusect = res->sectsize = 0;
+  res->res = 0;
+
+  if (rootpath[unit] != NULL) {
+    FUNC_STATFS(unit, NULL, rootpath[unit], &total, &free);
+    total = total > 0x7fffffff ? 0x7fffffff : total;
+    free = free > 0x7fffffff ? 0x7fffffff : free;
+    res->freeclu = htobe16(free / 32768);
+    res->totalclu = htobe16(total /32768);
+    res->clusect = htobe16(128);
+    res->sectsize = htobe16(1024);
+    res->res = htobe32(free);
+  }
+
+  DPRINTF1("DSKFRE: free=%u total=%u clusect=%u sectsz=%u res=%d\n", be16toh(res->freeclu), be16toh(res->totalclu), be16toh(res->clusect), be16toh(res->sectsize), be32toh(res->res));
+  return sizeof(*res);
+}
+
+case 0x50: /* dskfre */
   {
 #if 0
     struct cmd_dskfre *cmd = &comp->cmd_dskfre;
@@ -863,16 +1473,28 @@ okout_write:
 #endif
     break;
   }
+#endif
+  return 0;
+}
 
-  case 0x51: /* drvctrl */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+#if 0
+
+case 0x51: /* drvctrl */
   {
     DPRINTF1("DRVCTRL:\r\n");
     req->attr = 2;
     req->status = 0;
     break;
   }
+#endif
 
-  case 0x52: /* getdbp */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+#if 0
+
+case 0x52: /* getdbp */
   {
     DPRINTF1("GETDPB:\r\n");
     uint8_t *p = (uint8_t *)req->addr;
@@ -882,33 +1504,64 @@ okout_write:
     req->status = 0;
     break;
   }
+#endif
 
-  case 0x53: /* diskred */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+#if 0
+
+case 0x53: /* diskred */
     DPRINTF1("DISKRED:\r\n");
     req->status = 0;
     break;
 
-  case 0x54: /* diskwrt */
+#endif
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+#if 0
+
+case 0x54: /* diskwrt */
     DPRINTF1("DISKWRT:\r\n");
     req->status = 0;
     break;
+#endif
 
-  case 0x55: /* ioctl */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+#if 0
+
+case 0x55: /* ioctl */
     DPRINTF1("IOCTL:\r\n");
     req->status = 0;
     break;
+#endif
 
-  case 0x56: /* abort */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+#if 0
+
+case 0x56: /* abort */
     DPRINTF1("ABORT:\r\n");
     req->status = 0;
     break;
+#endif
 
-  case 0x57: /* mediacheck */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+#if 0
+
+case 0x57: /* mediacheck */
     DPRINTF1("MEDIACHECK:\r\n");
     req->status = 0;
     break;
+#endif
 
-  case 0x58: /* lock */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+#if 0
+
+case 0x58: /* lock */
     DPRINTF1("LOCK:\r\n");
     req->status = 0;
     break;
@@ -917,8 +1570,6 @@ okout_write:
     break;
   }
 #endif
-
-
 
 
 //****************************************************************************
