@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Yuichi Nakamura (@yunkya2)
+ * Copyright (c) 2023,2025 Yuichi Nakamura (@yunkya2)
  *
  * The MIT License (MIT)
  *
@@ -28,7 +28,7 @@
 //#define DEBUG
 
 //#define CONFIG_BOOTDRIVER
-#define CONFIG_DEVNAME      "\x01SERREMT"
+#define CONFIG_DEVNAME      "\x01SMBFS  "
 
 #undef  CONFIG_ALIGNED
 #define CONFIG_NFILEINFO    1

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023,2024 Yuichi Nakamura (@yunkya2)
+ * Copyright (c) 2023,2024,2025 Yuichi Nakamura (@yunkya2)
  *
  * The MIT License (MIT)
  *
@@ -32,8 +32,8 @@
 #include <x68k/dos.h>
 
 #include <config.h>
-#include <x68kremote.h>
-#include "remotedrv.h"
+#include <humandefs.h>
+#include "smbfs.h"
 
 //****************************************************************************
 // Global variables
@@ -43,43 +43,11 @@ struct dos_req_header *reqheader;   // Human68kからのリクエストヘッダ
 jmp_buf jenv;                       // タイムアウト時のジャンプ先
 int unit_base = 0;                  // ユニット番号のベース値
 
-static union remote_combuf {
-  struct cmd_init     cmd_init;
-  struct res_init     res_init;
-  struct cmd_dirop    cmd_dirop;
-  struct res_dirop    res_dirop;
-  struct cmd_rename   cmd_rename;
-  struct res_rename   res_rename;
-  struct cmd_chmod    cmd_chmod;
-  struct res_chmod    res_chmod;
-  struct cmd_files    cmd_files;
-  struct res_files    res_files;
-  struct cmd_nfiles   cmd_nfiles;
-  struct res_nfiles   res_nfiles;
-  struct cmd_create   cmd_create;
-  struct res_create   res_create;
-  struct cmd_open     cmd_open;
-  struct res_open     res_open;
-  struct cmd_close    cmd_close;
-  struct res_close    res_close;
-  struct cmd_read     cmd_read;
-  struct res_read     res_read;
-  struct cmd_write    cmd_write;
-  struct res_write    res_write;
-  struct cmd_filedate cmd_filedate;
-  struct res_filedate res_filedate;
-  struct cmd_dskfre   cmd_dskfre;
-  struct res_dskfre   res_dskfre;
-} b;
-
-#ifndef CONFIG_ALTCOMBUF
-static union remote_combuf * const comp = &b;
-#endif
-
 //****************************************************************************
 // Utility routine
 //****************************************************************************
 
+#if 0
 ssize_t send_read(uint32_t fcb, char *buf, uint32_t pos, size_t len)
 {
   struct cmd_read *cmd = &comp->cmd_read;
@@ -201,6 +169,7 @@ struct fcache *fcache_alloc(uint32_t filep, bool new)
   return NULL;
 }
 #endif
+#endif
 
 //****************************************************************************
 // Device driver interrupt rountine
@@ -212,7 +181,8 @@ int interrupt(void)
   struct dos_req_header *req = reqheader;
 
   if (setjmp(jenv)) {
-    return com_timeout(req);
+    return 0;
+//    return com_timeout(req);
   }
 
   DPRINTF2("----Command: 0x%02x\r\n", req->command);
@@ -223,7 +193,8 @@ int interrupt(void)
   case 0x40: /* init */
   {
     req->command = 0; /* for Human68k bug workaround */
-    int r = com_init(req);
+//    int r = com_init(req);
+    int r = 0;
     if (r >= 0) {
       req->attr = r; /* Number of units */
       extern char _end;
@@ -237,6 +208,7 @@ int interrupt(void)
 
   case 0x41: /* chdir */
   {
+#if 0
     struct cmd_dirop *cmd = &comp->cmd_dirop;
     struct res_dirop *res = &comp->res_dirop;
     cmd->command = req->command;
@@ -245,11 +217,13 @@ int interrupt(void)
     DNAMEPRINT(req->addr, false, "CHDIR: ");
     DPRINTF1(" -> %d\r\n", res->res);
     req->status = res->res;
+#endif
     break;
   }
 
   case 0x42: /* mkdir */
   {
+#if 0
     struct cmd_dirop *cmd = &comp->cmd_dirop;
     struct res_dirop *res = &comp->res_dirop;
     cmd->command = req->command;
@@ -258,11 +232,13 @@ int interrupt(void)
     DNAMEPRINT(req->addr, true, "MKDIR: ");
     DPRINTF1(" -> %d\r\n", res->res);
     req->status = res->res;
+#endif
     break;
   }
 
   case 0x43: /* rmdir */
   {
+#if 0
     struct cmd_dirop *cmd = &comp->cmd_dirop;
     struct res_dirop *res = &comp->res_dirop;
     cmd->command = req->command;
@@ -271,11 +247,13 @@ int interrupt(void)
     DNAMEPRINT(req->addr, true, "RMDIR: ");
     DPRINTF1(" -> %d\r\n", res->res);
     req->status = res->res;
+#endif
     break;
   }
 
   case 0x44: /* rename */
   {
+#if 0
     struct cmd_rename *cmd = &comp->cmd_rename;
     struct res_rename *res = &comp->res_rename;
     cmd->command = req->command;
@@ -286,11 +264,13 @@ int interrupt(void)
     DNAMEPRINT((void *)req->status, true, " to ");
     DPRINTF1(" -> %d\r\n", res->res);
     req->status = res->res;
+#endif
     break;
   }
 
   case 0x45: /* delete */
   {
+#if 0
     struct cmd_dirop *cmd = &comp->cmd_dirop;
     struct res_dirop *res = &comp->res_dirop;
     cmd->command = req->command;
@@ -299,11 +279,13 @@ int interrupt(void)
     DNAMEPRINT(req->addr, true, "DELETE: ");
     DPRINTF1(" -> %d\r\n", res->res);
     req->status = res->res;
+#endif
     break;
   }
 
   case 0x46: /* chmod */
   {
+#if 0
     struct cmd_chmod *cmd = &comp->cmd_chmod;
     struct res_chmod *res = &comp->res_chmod;
     cmd->command = req->command;
@@ -313,11 +295,13 @@ int interrupt(void)
     DNAMEPRINT(req->addr, true, "CHMOD: ");
     DPRINTF1(" 0x%02x -> 0x%02x\r\n", req->attr, res->res);
     req->status = res->res;
+#endif
     break;
   }
 
   case 0x47: /* files */
   {
+#if 0
     struct cmd_files *cmd = &comp->cmd_files;
     struct res_files *res = &comp->res_files;
     cmd->command = req->command;
@@ -353,11 +337,13 @@ int interrupt(void)
     DNAMEPRINT(req->addr, false, "FILES: ");
     DPRINTF1(" attr=0x%02x filep=0x%08x -> %d %s\r\n", req->attr, req->status, res->res, res->file[0].name);
     req->status = res->res;
+#endif
     break;
   }
 
   case 0x48: /* nfiles */
   {
+#if 0
     struct cmd_nfiles *cmd = &comp->cmd_nfiles;
     struct res_nfiles *res = &comp->res_nfiles;
     cmd->command = req->command;
@@ -401,11 +387,13 @@ int interrupt(void)
 out_nfiles:
     DPRINTF1("NFILES: filep=0x%08x -> %d %s\r\n", req->status, res->res, fb->name);
     req->status = res->res;
+#endif
     break;
   }
 
   case 0x49: /* create */
   {
+#if 0
     struct cmd_create *cmd = &comp->cmd_create;
     struct res_create *res = &comp->res_create;
     cmd->command = req->command;
@@ -418,11 +406,13 @@ out_nfiles:
     DNAMEPRINT(req->addr, true, "CREATE: ");
     DPRINTF1(" fcb=0x%08x attr=0x%02x mode=%d -> %d\r\n", (uint32_t)req->fcb, req->attr, req->status, res->res);
     req->status = res->res;
+#endif
     break;
   }
 
   case 0x4a: /* open */
   {
+#if 0
     struct cmd_open *cmd = &comp->cmd_open;
     struct res_open *res = &comp->res_open;
     int mode = dos_fcb_mode(req->fcb);
@@ -435,11 +425,13 @@ out_nfiles:
     DNAMEPRINT(req->addr, true, "OPEN: ");
     DPRINTF1(" fcb=0x%08x mode=%d -> %d %d\r\n", (uint32_t)req->fcb, mode, res->res, res->size);
     req->status = res->res;
+#endif
     break;
   }
 
   case 0x4b: /* close */
   {
+#if 0
     dcache_flash((uint32_t)req->fcb, true);
 
     struct cmd_close *cmd = &comp->cmd_close;
@@ -449,11 +441,13 @@ out_nfiles:
     com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
     DPRINTF1("CLOSE: fcb=0x%08x\r\n", (uint32_t)req->fcb);
     req->status = res->res;
+#endif
     break;
   }
 
   case 0x4c: /* read */
   {
+#if 0
     dcache_flash((uint32_t)req->fcb, false);
 
     uint32_t *pp = &dos_fcb_fpos(req->fcb);
@@ -506,11 +500,13 @@ out_nfiles:
 errout_read:
     DPRINTF1("READ: fcb=0x%08x %d -> %d\r\n", (uint32_t)req->fcb, req->status, size);
     req->status = size;
+#endif
     break;
   }
 
   case 0x4d: /* write */
   {
+#if 0
     uint32_t *pp = &dos_fcb_fpos(req->fcb);
     uint32_t *sp = &dos_fcb_size(req->fcb);
     size_t len = (uint32_t)req->status;
@@ -555,11 +551,13 @@ okout_write:
     }
     DPRINTF1("WRITE: fcb=0x%08x %d -> %d\r\n", (uint32_t)req->fcb, req->status, len);
     req->status = len;
+#endif
     break;
   }
 
   case 0x4e: /* seek */
   {
+#if 0
     dcache_flash((uint32_t)req->fcb, false);
 
     int whence = req->attr;
@@ -574,11 +572,13 @@ okout_write:
     }
     DPRINTF1("SEEK: fcb=0x%x offset=%d whence=%d -> %d\r\n", (uint32_t)req->fcb, offset, whence, pos);
     req->status = pos;
+#endif
     break;
   }
 
   case 0x4f: /* filedate */
   {
+#if 0
     struct cmd_filedate *cmd = &comp->cmd_filedate;
     struct res_filedate *res = &comp->res_filedate;
     cmd->command = req->command;
@@ -588,11 +588,13 @@ okout_write:
     com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
     DPRINTF1("FILEDATE: fcb=0x%08x 0x%04x 0x%04x -> 0x%04x 0x%04x\r\n", (uint32_t)req->fcb, req->status >> 16, req->status & 0xffff, res->date, res->time);
     req->status = res->time + (res->date << 16);
+#endif
     break;
   }
 
   case 0x50: /* dskfre */
   {
+#if 0
     struct cmd_dskfre *cmd = &comp->cmd_dskfre;
     struct res_dskfre *res = &comp->res_dskfre;
     cmd->command = req->command;
@@ -606,6 +608,7 @@ okout_write:
     DPRINTF1("DSKFRE: free=%u total=%u clusect=%u sectsz=%u res=%d\r\n", res->freeclu, res->totalclu, res->clusect, res->sectsize, res->res);
     req->status = res->res;
 
+#endif
     break;
   }
 

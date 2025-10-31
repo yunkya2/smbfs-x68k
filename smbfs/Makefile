@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2023 Yuichi Nakamura (@yunkya2)
+# Copyright (c) 2023,2025 Yuichi Nakamura (@yunkya2)
 #
 # The MIT License (MIT)
 #
@@ -30,24 +30,28 @@ RANLIB = $(CROSS)ranlib
 
 GIT_REPO_VERSION=$(shell git describe --tags --always)
 
-CFLAGS = -g -m68000 -I. -I../include -Os -DGIT_REPO_VERSION=\"$(GIT_REPO_VERSION)\"
-CFLAGS += -finput-charset=utf-8 -fexec-charset=cp932
-ASFLAGS = -m68000 -I.
+CFLAGS = -Wall -Os -g $(INC) $(DEFS) -MMD -MP
+CFLAGS += -DGIT_REPO_VERSION=\"$(GIT_REPO_VERSION)\"
+ASFLAGS = -I. -MMD -MP
+LDFLAGS = -nostartfiles -s $(LIBS)
+
+INC += -I. -I../include -I.
+LIBS += -lsocket
+DEFS +=
 
 ifneq ($(DEBUG),)
-CFLAGS += -DDEBUG
+DEFS += -DDEBUG
 endif
 
-all: SERREMOTE.SYS
+OBJS = head.o smbfs.o
+DEPS = $(OBJS:.o=.d)
 
-SERREMOTE.SYS: head.o serremote.o remotedrv.o
-	$(LD) -o $@ $^ -nostartfiles -s
+all: smbfs.sys
+
+smbfs.sys: $(OBJS)
+	$(LD) -o $@ $^ $(LDFLAGS)
 
 vpath %.h ../include
-
-head.o:      config.h
-serremote.o: config.h x68kremote.h remotedrv.h
-remotedrv.o: config.h x68kremote.h remotedrv.h
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $<
@@ -56,6 +60,8 @@ remotedrv.o: config.h x68kremote.h remotedrv.h
 	$(AS) $(ASFLAGS) -c $<
 
 clean:
-	-rm -f *.o *.SYS *.elf*
+	-rm -f $(OBJS) $(DEPS) *.o *.sys *.elf*
+
+-include $(DEPS)
 
 .PHONY: all clean

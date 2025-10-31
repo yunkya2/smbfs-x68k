@@ -28,7 +28,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <setjmp.h>
-#include <x68kremote.h>
 
 #define DPRINTF1(...)  DPRINTF(1, __VA_ARGS__)
 #define DPRINTF2(...)  DPRINTF(2, __VA_ARGS__)
