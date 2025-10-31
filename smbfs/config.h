@@ -25,7 +25,7 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
-//#define DEBUG
+#define DEBUG
 
 //#define CONFIG_BOOTDRIVER
 #define CONFIG_DEVNAME      "\x01SMBFS  "

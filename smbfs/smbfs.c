@@ -27,9 +27,11 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include <setjmp.h>
 #include <x68k/dos.h>
+#include <x68k/iocs.h>
 
 #include <config.h>
 #include <humandefs.h>
@@ -42,6 +44,47 @@
 struct dos_req_header *reqheader;   // Human68kからのリクエストヘッダ
 jmp_buf jenv;                       // タイムアウト時のジャンプ先
 int unit_base = 0;                  // ユニット番号のベース値
+
+#ifdef DEBUG
+int debuglevel = 2;
+#endif
+
+//****************************************************************************
+// for debugging
+//****************************************************************************
+
+#ifdef DEBUG
+char heap[1024];                // temporary heap for debug print
+void *_HSTA = heap;
+void *_HEND = heap + 1024;
+void *_PSP;
+
+void DPRINTF(int level, char *fmt, ...)
+{
+  char buf[256];
+  va_list ap;
+
+  if (debuglevel < level)
+    return;
+
+  va_start(ap, fmt);
+  vsiprintf(buf, fmt, ap);
+  va_end(ap);
+  _iocs_b_print(buf);
+}
+
+void DNAMEPRINT(void *n, bool full, char *head)
+{
+  struct dos_namestbuf *b = (struct dos_namestbuf *)n;
+
+  DPRINTF1("%s%c:", head, b->drive + 'A');
+  for (int i = 0; i < 65 && b->path[i]; i++) {
+      DPRINTF1("%c", (uint8_t)b->path[i] == 9 ? '\\' : (uint8_t)b->path[i]);
+  }
+  if (full)
+    DPRINTF1("%.8s%.10s.%.3s", b->name1, b->name2, b->ext);
+}
+#endif
 
 //****************************************************************************
 // Utility routine
@@ -175,6 +218,65 @@ struct fcache *fcache_alloc(uint32_t filep, bool new)
 // Device driver interrupt rountine
 //****************************************************************************
 
+static int my_atoi(char *p)
+{
+  int res = 0;
+  while (*p >= '0' && *p <= '9') {
+    res = res * 10 + *p++ - '0';
+  }
+  return res;
+}
+
+int com_timeout(struct dos_req_header *req)
+{
+  DPRINTF1("command timeout\r\n");
+  req->status = -1;
+  return 0x1002;
+}
+
+int com_init(struct dos_req_header *req)
+{
+  int units = 1;
+  _dos_print
+    ("\r\nX68000 Samba filesystem (version " GIT_REPO_VERSION ")\r\n");
+
+  char *p = (char *)req->status;
+  p += strlen(p) + 1;
+  while (*p != '\0') {
+    if (*p == '/' || *p =='-') {
+      p++;
+      switch (*p | 0x20) {
+      case 'd':         // /D .. デバッグレベル増加
+        debuglevel++;
+        break;
+      case 'u':         // /u<units> .. ユニット数設定
+        p++;
+        units = my_atoi(p);
+        if (units < 1 || units > 7)
+          units = 1;
+        break;
+      }
+    }
+    p += strlen(p) + 1;
+  }
+
+  _dos_print("ドライブ");
+  _dos_putchar('A' + *(char *)&req->fcb);
+  if (units > 1) {
+    _dos_print(":-");
+    _dos_putchar('A' + *(char *)&req->fcb + units - 1);
+  }
+  _dos_print(":でsmbfsが利用可能です\r\n");
+
+  DPRINTF1("Debug level: %d\r\n", debuglevel);
+
+  return units;
+}
+
+//****************************************************************************
+// Device driver interrupt rountine
+//****************************************************************************
+
 int interrupt(void)
 {
   uint16_t err = 0;
@@ -193,8 +295,7 @@ int interrupt(void)
   case 0x40: /* init */
   {
     req->command = 0; /* for Human68k bug workaround */
-//    int r = com_init(req);
-    int r = 0;
+    int r = com_init(req);
     if (r >= 0) {
       req->attr = r; /* Number of units */
       extern char _end;
