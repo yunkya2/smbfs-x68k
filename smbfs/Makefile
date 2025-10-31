@@ -33,45 +33,54 @@ GIT_REPO_VERSION=$(shell git describe --tags --always)
 CFLAGS = -Wall -Os -g $(INC) $(DEFS) -MMD -MP
 CFLAGS += -DGIT_REPO_VERSION=\"$(GIT_REPO_VERSION)\"
 ASFLAGS = -I. -MMD -MP
+LDFLAGS = -lsocket
+LDFLAGS += -Wl,-Map,$(@:.x=.map)
 
 INC += -I. -I../include -I../iconv_mini/
 INC += -I../libsmb2/include -I../libsmb2/include/smb2
-LIBS += -lsocket
 DEFS +=
 
 ifneq ($(DEBUG),)
 DEFS += -DDEBUG
 endif
 
-OBJS = head.o smbfs.o
+OBJS += head.o
+OBJS += smbfs.o
 OBJS += iconv_mini.o
 
 LIBSMB2 = libsmb2.a
-LIBS += libsmb2.a
+LIBS += $(LIBSMB2)
 
-all: smbfs.sys
+all: smbfs.x
 
-smbfs.sys: $(OBJS) $(LIBSMB2)
-	$(LD) -o $@ $^ $(LIBS) -nostartfiles -s
+smbfs.x: $(OBJS) $(LIBSMB2)
+	$(LD) -o $@ $^ $(LDFLAGS) -nostartfiles -s
 
-$(LIBSMB2):
+$(LIBSMB2): ../libsmb2/x68k/$(LIBSMB2)
+	cp $< $@
+
+../libsmb2/x68k/$(LIBSMB2): FORCE
 	$(MAKE) -C ../libsmb2/x68k
-	cp ../libsmb2/x68k/$@ .
+
+FORCE:
 
 %.o: %.c
-	$(CC) $(CFLAGS) -c $<
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 %.o: ../iconv_mini/%.c
-	$(CC) $(CFLAGS) -c $<
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 %.o: %.S
-	$(AS) $(ASFLAGS) -c $<
+	$(AS) $(ASFLAGS) -c -o $@ $<
 
 DEPS = $(OBJS:.o=.d)
 
 clean:
-	-rm -f $(OBJS) $(DEPS) $(LIBSMB2) *.sys *.elf*
+	-rm -f $(OBJS) $(DEPS) $(LIBSMB2) *.x *.elf* *.map
+
+distclean: clean
+	$(MAKE) -C ../libsmb2/x68k clean
 
 -include $(DEPS)
 
-.PHONY: all clean
+.PHONY: all clean distclean FORCE
