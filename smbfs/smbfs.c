@@ -38,7 +38,6 @@
 #include <humandefs.h>
 #include "smbfs.h"
 
-typedef struct dos_namestbuf dos_namebuf;
 
 struct smb2_context *path2smb2(const char *path, const char **shpath);
 
@@ -54,7 +53,8 @@ struct dos_req_header *reqheader;   // Human68kからのリクエストヘッダ
 jmp_buf jenv;                       // タイムアウト時のジャンプ先
 int unit_base = 0;                  // ユニット番号のベース値  (必要? TBD *****)
 
-const char *rootpath[8];
+const char *rootpath[8] = { "/", NULL, NULL, NULL, NULL, NULL, NULL, NULL }; // ホスト側のルートパス
+struct smb2_context *rootsmb2;
 
 #ifdef DEBUG
 int debuglevel = 2;
@@ -132,9 +132,17 @@ struct fcache *fcache_alloc(uint32_t filep, bool new)
 
 //////////////////////////////////////////////////////////////////////////////
 
-struct smb2_context *path2smb2(const char *path, const char **shpath)
-{}
+// 与えられたpath先頭の共有名パートを抜き出して、その共有名に対応するsmb2_contextを返す
+// 共有名に続くパスをshpathに返す
 
+struct smb2_context *path2smb2(const char *path, const char **shpath)
+{
+  while (*path == '/')  // (とりあえず共有名は考慮しない)
+    path++;
+  *shpath = path;   // 共有名に続くパスの先頭をセット
+
+  return rootsmb2;
+}
 
 //////////////////////////////////////////////////////////////////////////////
 
@@ -145,14 +153,15 @@ static void conv_statinfo(TYPE_STAT *st, void *v)
 
   f->atr = FUNC_FILEMODE_ATTR(st);
   f->filelen = htobe32(STAT_SIZE(st));
-  struct tm *tm = localtime(&STAT_MTIME(st));
+  time_t mtime = STAT_MTIME(st);
+  struct tm *tm = localtime(&mtime);
   f->time = htobe16(tm->tm_hour << 11 | tm->tm_min << 5 | tm->tm_sec >> 1);
   f->date = htobe16((tm->tm_year - 80) << 9 | (tm->tm_mon + 1) << 5 | tm->tm_mday);
 }
 
 // namestsのパスをホストのパスに変換する
 // (derived from HFS.java by Makoto Kamada)
-static int conv_namebuf(int unit, dos_namebuf *ns, bool full, hostpath_t *path)
+static int conv_namebuf(int unit, struct dos_namestbuf *ns, bool full, hostpath_t *path)
 {
   uint8_t bb[88];   // SJISでのパス名
   int k = 0;
@@ -201,7 +210,7 @@ static int conv_namebuf(int unit, dos_namebuf *ns, bool full, hostpath_t *path)
 
   // SJIS -> UTF-8に変換
   size_t dst_len = sizeof(*path) - 1 - len;  //パス名バッファ残りサイズ
-  char *src_buf = bb;
+  char *src_buf = (char *)bb;
   size_t src_len = k;
   if (len == 0 && bb[0] == '/') {
     src_buf++;      //変換後のパス名の先頭に'/'が来ないようにする
@@ -400,155 +409,87 @@ int op_rmdir(struct dos_req_header *req)
 
 int op_rename(struct dos_req_header *req)
 {
-#if 0
-  struct cmd_rename *cmd = (struct cmd_rename *)cbuf;
-  struct res_rename *res = (struct res_rename *)rbuf;
   hostpath_t pathold;
   hostpath_t pathnew;
 
-  res->res = 0;
+  DNAMEPRINT(req->addr, true, "RENAME: ");
 
-  if (conv_namebuf(unit, &cmd->path_old, true, &pathold) < 0) {
-    res->res = _DOSE_NODIR;
-    goto errout;
+  if (conv_namebuf(req->unit, req->addr, true, &pathold) < 0) {
+    DPRINTF1("-> NODIR\r\n");
+    return _DOSE_NODIR;
   }
-  if (conv_namebuf(unit, &cmd->path_new, true, &pathnew) < 0) {
-    res->res = _DOSE_NODIR;
-    goto errout;
+  if (conv_namebuf(req->unit, (void *)req->status, true, &pathnew) < 0) {
+    DPRINTF1("-> NODIR\r\n");
+    return _DOSE_NODIR;
   }
 
   int err;
-  if (FUNC_RENAME(unit, &err, pathold, pathnew) < 0) {
-    switch (err) {
-    case ENOTEMPTY:
-      res->res = _DOSE_CANTREN;
-      break;
-    default:
-      res->res = conv_errno(err);
-      break;
-    }
-  }
-errout:
-  DPRINTF1("RENAME: %s to %s  -> %d\n", pathold, pathnew, res->res);
-  return sizeof(*res);
-}
+  FUNC_RENAME(req->unit, &err, pathold, pathnew);
 
-{
-    struct cmd_rename *cmd = &comp->cmd_rename;
-    struct res_rename *res = &comp->res_rename;
-    cmd->command = req->command;
-    memcpy(&cmd->path_old, req->addr, sizeof(struct dos_namestbuf));
-    memcpy(&cmd->path_new, (void *)req->status, sizeof(struct dos_namestbuf));
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-    DNAMEPRINT(req->addr, true, "RENAME: ");
-    DNAMEPRINT((void *)req->status, true, " to ");
-    DPRINTF1(" -> %d\r\n", res->res);
-    req->status = res->res;
-    break;
-#endif
-  return 0;
+  DPRINTF1("RENAME: %s to %s  -> %d\n", pathold, pathnew, err);
+
+  switch (err) {
+  case ENOTEMPTY:
+    DPRINTF1("-> CANTREN\r\n");
+    return _DOSE_CANTREN;
+  default:
+    err = conv_errno(err);
+    return err;
+  }
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 int op_delete(struct dos_req_header *req)
 {
-#if 0
-  struct cmd_dirop *cmd = (struct cmd_dirop *)cbuf;
-  struct res_dirop *res = (struct res_dirop *)rbuf;
   hostpath_t path;
 
-  res->res = 0;
+  DNAMEPRINT(req->addr, true, "DELETE: ");
 
-  if (conv_namebuf(unit, &cmd->path, true, &path) < 0) {
-    res->res = _DOSE_NODIR;
-    goto errout;
+  if (conv_namebuf(req->unit, req->addr, true, &path) < 0) {
+    DPRINTF1("-> NODIR\r\n");
+    return _DOSE_NODIR;
   }
 
   int err;
-  if (FUNC_UNLINK(unit, &err, path) < 0) {
-    res->res = conv_errno(err);
-  }
-errout:
-  DPRINTF1("DELETE: %s -> %d\n", path, res->res);
-  return sizeof(*res);
-}
-
-
-  case 0x45: /* delete */
-  {
-    struct cmd_dirop *cmd = &comp->cmd_dirop;
-    struct res_dirop *res = &comp->res_dirop;
-    cmd->command = req->command;
-    memcpy(&cmd->path, req->addr, sizeof(struct dos_namestbuf));
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-    DNAMEPRINT(req->addr, true, "DELETE: ");
-    DPRINTF1(" -> %d\r\n", res->res);
-    req->status = res->res;
-    break;
-  }
-
-
-#endif
-  return 0;
+  FUNC_UNLINK(req->unit, &err, path);
+  err = conv_errno(err);
+  DPRINTF1("-> %d\r\n", err);
+  return err;
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 int op_chmod(struct dos_req_header *req)
 {
-#if 0
-  struct cmd_chmod *cmd = (struct cmd_chmod *)cbuf;
-  struct res_chmod *res = (struct res_chmod *)rbuf;
   hostpath_t path;
+
+  DNAMEPRINT(req->addr, true, "CHMOD: ");
+
+  if (conv_namebuf(req->unit, req->addr, true, &path) < 0) {
+    DPRINTF1("-> NODIR\r\n");
+    return _DOSE_NODIR;
+  }
+
+  DPRINTF1(" 0x%02x ", req->attr);
+
   TYPE_STAT st;
-
-  res->res = 0;
-
-  if (conv_namebuf(unit, &cmd->path, true, &path) < 0) {
-    res->res = _DOSE_NODIR;
-    goto errout;
-  }
-
   int err;
-  if (FUNC_STAT(unit, &err, path, &st) < 0) {
-    res->res = conv_errno(err);
+  if (FUNC_STAT(req->unit, &err, path, &st) < 0) {
+    err = conv_errno(err);
+    DPRINTF1("-> %d\r\n", err);
+    return err;
   } else {
-    res->res = FUNC_FILEMODE_ATTR(&st);
+    err = FUNC_FILEMODE_ATTR(&st);
   }
-  if (cmd->attr != 0xff) {
-    if (FUNC_CHMOD(unit, &err, path, FUNC_ATTR_FILEMODE(cmd->attr, &st)) < 0) {
-      res->res = conv_errno(err);
-    } else {
-      res->res = 0;
-    }
-  }
-errout:
-  if (res->res < 0)
-    DPRINTF1("CHMOD: %s 0x%02x -> %d\n", path, cmd->attr, res->res);
-  else
-    DPRINTF1("CHMOD: %s 0x%02x -> 0x%02x\n", path, cmd->attr, res->res);
-  return sizeof(*res);
-}
 
-
-case 0x46: /* chmod */
-  {
-#if 0
-    struct cmd_chmod *cmd = &comp->cmd_chmod;
-    struct res_chmod *res = &comp->res_chmod;
-    cmd->command = req->command;
-    cmd->attr = req->attr;
-    memcpy(&cmd->path, req->addr, sizeof(struct dos_namestbuf));
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-    DNAMEPRINT(req->addr, true, "CHMOD: ");
-    DPRINTF1(" 0x%02x -> 0x%02x\r\n", req->attr, res->res);
-    req->status = res->res;
-#endif
-    break;
+  if (req->attr != 0xff) {
+    FUNC_CHMOD(req->unit, &err, path, FUNC_ATTR_FILEMODE(req->attr, &st));
+    err = conv_errno(err);
   }
-#endif
-  return 0;
+
+  DPRINTF1("-> %d\r\n", err);
+  return err;
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
@@ -1615,17 +1556,17 @@ int interrupt(void)
   case 0x43: /* rmdir */
     req->status = op_rmdir(req);
     break;
-
-  #if 0
   case 0x44: /* rename */
-    rsize = op_rename(unit, cbuf, rbuf);
+    req->status = op_rename(req);
     break;
   case 0x45: /* remove */
-    rsize = op_delete(unit, cbuf, rbuf);
+    req->status = op_delete(req);
     break;
   case 0x46: /* chmod */
-    rsize = op_chmod(unit, cbuf, rbuf);
+    req->status = op_chmod(req);
     break;
+
+  #if 0
   case 0x47: /* files */
     rsize = op_files(unit, cbuf, rbuf);
     break;
