@@ -21,12 +21,18 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
+SUBDIR = smbfs smbmount smbclient
+
 all:
-	$(MAKE) -C smbclient $@
+	for dir in $(SUBDIR); do \
+	  $(MAKE) -C $$dir all; \
+	done
 
 clean distclean:
-	$(MAKE) -C smbclient $@
-	-rm -f smbclient.x README.txt
+	for dir in $(SUBDIR); do \
+	  $(MAKE) -C $$dir $@; \
+	done
+	-rm -f *.x README.txt
 
 GIT_REPO_VERSION=$(shell git describe --tags --always)
 
@@ -36,3 +42,4 @@ release: distclean all
 	zip -r smbclient-$(GIT_REPO_VERSION).zip README.txt smbclient.x
 
 .PHONY: all clean distclean release
+.PHONY: smbfs smbmount smbclient
