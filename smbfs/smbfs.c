@@ -45,6 +45,8 @@ struct smb2_context *path2smb2(const char *path, const char **shpath);
 
 #include "fileop.h"
 
+#define TIMEZONE (9 * 3600) // JST (UTC+9)
+
 //****************************************************************************
 // Global variables
 //****************************************************************************
@@ -132,6 +134,7 @@ static void conv_statinfo(TYPE_STAT *st, void *v)
   f->atr = FUNC_FILEMODE_ATTR(st);
   f->filelen = htobe32(STAT_SIZE(st));
   time_t mtime = STAT_MTIME(st);
+  mtime += TIMEZONE;
   struct tm *tm = localtime(&mtime);
   f->time = htobe16(tm->tm_hour << 11 | tm->tm_min << 5 | tm->tm_sec >> 1);
   f->date = htobe16((tm->tm_year - 80) << 9 | (tm->tm_mon + 1) << 5 | tm->tm_mday);
@@ -1194,8 +1197,22 @@ int op_diskwrt(struct dos_req_header *req)
 
 int op_ioctl(struct dos_req_header *req)
 {
-  DPRINTF1("IOCTL:\r\n");
-  return 0;
+  int res;
+  int func = (int)req->status >> 16;
+  DPRINTF1("IOCTL: cmd=%d buf=%p\r\n", func, req->addr);
+
+  switch (func) {
+  case -1:
+    memcpy(req->addr, "SMBFSv1 ", 8);
+    res = 0;
+    break;
+
+  default:
+    res = -1;
+    break;
+  }
+
+  return res;
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
@@ -1398,7 +1415,7 @@ void _start()
     // 常駐解除
     // TODO: バッファフラッシュ
     // TODO: ディレクトリ移動、subst設定時の対応
-    printf("free %c: %p\n", 'A' + drv, dpb->devheader);
+//    printf("free %c: %p\n", 'A' + drv, dpb->devheader);
     curdir->type = 0;
     struct dos_dpb *olddpb = (struct dos_dpb *)((char *)dpb->devheader + ((char *)&dummy_dpb - (char *)&devheader));
     for (int i = 0; i < 26; i++) {
@@ -1407,6 +1424,7 @@ void _start()
         curdir_table[i].dpb->next = olddpb->next;
       }
     }
+     printf("ドライブ %c: のSMBFSをマウント解除しました\n", 'A' + drv);
     _dos_mfree((char *)dpb->devheader - 0xf0);
     _dos_exit();
   }
@@ -1423,8 +1441,9 @@ void _start()
     _dos_exit();
   }
 
-  printf("ドライブ %c: (real %c:)\n", 'A' + drv, 'A' + realdrv);
-  printf("_HSTA=%p\n", _HSTA);
+//  printf("ドライブ %c: (real %c:)\n", 'A' + drv, 'A' + realdrv);
+//  printf("_HSTA=%p\n", _HSTA);
+  printf("ドライブ %c: にSMBFSをマウントしました\n", 'A' + drv);
 
   dummy_dpb.drive = realdrv; 
   dummy_dpb.next = (void *)-1;
@@ -1452,7 +1471,7 @@ void _start()
   curdir->pathlen = 2;
 #endif
 
-  if (strlen(cmdline->buffer) > 0) {
+//  if (strlen(cmdline->buffer) > 0) {
     smb2 = smb2_init_context();
     printf("smb2_init_context: %p\n", smb2);
     if (smb2 != NULL) {
@@ -1467,7 +1486,7 @@ void _start()
     } else {
       DPRINTF1("Failed to init context\r\n");
     } 
-  }
+//  }
 
   _dos_keeppr((int)&_end - (int)&devheader, 0);
 }

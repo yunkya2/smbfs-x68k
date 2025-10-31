@@ -34,7 +34,7 @@
 
 devheader:
     .long   -1                  // link pointer
-    .word   0x2000              // device type (remote disk)
+    .word   0x2040              // device type (remote disk)
     .long   strategy            // strategy routine entry point
     .long   interrupt_asm       // interrupt routine entry point
     .ascii  CONFIG_DEVNAME      // device name
