@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Yuichi Nakamura (@yunkya2)
+ * Copyright (c) 2023,2025 Yuichi Nakamura (@yunkya2)
  *
  * The MIT License (MIT)
  *
@@ -35,7 +35,6 @@
 #include <smb2.h>
 #include <libsmb2.h>
 
-#include "main.h"
 #include "iconv_mini.h"
 
 //****************************************************************************

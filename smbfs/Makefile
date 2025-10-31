@@ -33,9 +33,9 @@ GIT_REPO_VERSION=$(shell git describe --tags --always)
 CFLAGS = -Wall -Os -g $(INC) $(DEFS) -MMD -MP
 CFLAGS += -DGIT_REPO_VERSION=\"$(GIT_REPO_VERSION)\"
 ASFLAGS = -I. -MMD -MP
-LDFLAGS = -nostartfiles -s $(LIBS)
 
-INC += -I. -I../include -I.
+INC += -I. -I../include -I../iconv_mini/
+INC += -I../libsmb2/include -I../libsmb2/include/smb2
 LIBS += -lsocket
 DEFS +=
 
@@ -44,6 +44,7 @@ DEFS += -DDEBUG
 endif
 
 OBJS = head.o smbfs.o
+OBJS += iconv_mini.o
 
 LIBSMB2 = libsmb2.a
 LIBS += libsmb2.a
@@ -51,13 +52,16 @@ LIBS += libsmb2.a
 all: smbfs.sys
 
 smbfs.sys: $(OBJS) $(LIBSMB2)
-	$(LD) -o $@ $^ $(LDFLAGS)
+	$(LD) -o $@ $^ $(LIBS) -nostartfiles -s
 
 $(LIBSMB2):
 	$(MAKE) -C ../libsmb2/x68k
 	cp ../libsmb2/x68k/$@ .
 
 %.o: %.c
+	$(CC) $(CFLAGS) -c $<
+
+%.o: ../iconv_mini/%.c
 	$(CC) $(CFLAGS) -c $<
 
 %.o: %.S
@@ -70,4 +74,4 @@ clean:
 
 -include $(DEPS)
 
-.PHONY: all clean $(LIBSMB2)
+.PHONY: all clean

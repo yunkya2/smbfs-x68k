@@ -30,6 +30,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <setjmp.h>
+#include <errno.h>
 #include <x68k/dos.h>
 #include <x68k/iocs.h>
 
@@ -37,21 +38,36 @@
 #include <humandefs.h>
 #include "smbfs.h"
 
+struct smb2_context *path2smb2(const char *path, const char **shpath);
+
+#include "fileop.h"
+
 //****************************************************************************
 // Global variables
 //****************************************************************************
 
+typedef char hostpath_t[256];
+
 struct dos_req_header *reqheader;   // Human68kからのリクエストヘッダ
 jmp_buf jenv;                       // タイムアウト時のジャンプ先
-int unit_base = 0;                  // ユニット番号のベース値
+int unit_base = 0;                  // ユニット番号のベース値  (必要? TBD *****)
+
+const char *rootpath[8];
 
 #ifdef DEBUG
 int debuglevel = 2;
 #endif
 
+uint32_t _vernum;
+
 //****************************************************************************
 // for debugging
 //****************************************************************************
+
+int main()
+{
+
+}
 
 #ifdef DEBUG
 char heap[1024];                // temporary heap for debug print
@@ -214,6 +230,143 @@ struct fcache *fcache_alloc(uint32_t filep, bool new)
 #endif
 #endif
 
+//////////////////////////////////////////////////////////////////////////////
+
+struct smb2_context *path2smb2(const char *path, const char **shpath)
+{}
+
+
+//////////////////////////////////////////////////////////////////////////////
+
+// struct statのファイル情報を変換する
+static void conv_statinfo(TYPE_STAT *st, void *v)
+{
+  struct dos_filesinfo *f = (struct dos_filesinfo *)v;
+
+  f->atr = FUNC_FILEMODE_ATTR(st);
+  f->filelen = htobe32(STAT_SIZE(st));
+  struct tm *tm = localtime(&STAT_MTIME(st));
+  f->time = htobe16(tm->tm_hour << 11 | tm->tm_min << 5 | tm->tm_sec >> 1);
+  f->date = htobe16((tm->tm_year - 80) << 9 | (tm->tm_mon + 1) << 5 | tm->tm_mday);
+}
+
+// namestsのパスをホストのパスに変換する
+// (derived from HFS.java by Makoto Kamada)
+static int conv_namebuf(int unit, dos_namebuf *ns, bool full, hostpath_t *path)
+{
+  uint8_t bb[88];   // SJISでのパス名
+  int k = 0;
+
+  if (rootpath[unit] == NULL) { // ホストパスが割り当てられていない
+    return -1;
+  }
+
+  // パスの区切りを 0x09 -> '/' に変更
+  for (int i = 0; i < 65; ) {
+    for (; i < 65 && ns->path[i] == 0x09; i++)  //0x09の並びを読み飛ばす
+      ;
+    if (i >= 65 || ns->path[i] == 0x00)   //ディレクトリ名がなかった
+      break;
+    bb[k++] = 0x2f;  //ディレクトリ名の手前の'/'
+    for (; i < 65 && ns->path[i] != 0x00 && ns->path[i] != 0x09; i++)
+      bb[k++] = ns->path[i];  //ディレクトリ名
+  }
+  // 主ファイル名を展開する
+  if (full) {
+    bb[k++] = 0x2f;  //主ファイル名の手前の'/'
+    memcpy(&bb[k], ns->name1, sizeof(ns->name1));   //主ファイル名1
+    k += sizeof(ns->name1);
+    memcpy(&bb[k], ns->name2, sizeof(ns->name2));   //主ファイル名2
+    k += sizeof(ns->name2);
+    for (; k > 0 && bb[k - 1] == 0x00; k--)   //主ファイル名2の末尾の0x00を切り捨てる
+      ;
+    for (; k > 0 && bb[k - 1] == 0x20; k--)   //主ファイル名1の末尾の0x20を切り捨てる
+      ;
+    bb[k++] = 0x2e;  //拡張子の手前の'.'
+    memcpy(&bb[k], ns->ext, sizeof(ns->ext));   //拡張子
+    k += sizeof(ns->ext);
+    for (; k > 0 && bb[k - 1] == 0x20; k--)   //拡張子の末尾の0x20を切り捨てる
+      ;
+    for (; k > 0 && bb[k - 1] == 0x2e; k--)   //主ファイル名の末尾の0x2eを切り捨てる
+      ;
+  }
+
+  char *dst_buf = (char *)path;
+  strncpy(dst_buf, rootpath[unit], sizeof(*path) - 1);
+  int len = strlen(rootpath[unit]);
+  if (len >= 1 && rootpath[unit][len - 1] == '/' && bb[0] == '/') {
+    len--;          //rootpathの末尾から'/'が連続しないようにする
+  }
+  dst_buf += len;   //マウント先パス名を前置
+
+  // SJIS -> UTF-8に変換
+  size_t dst_len = sizeof(*path) - 1 - len;  //パス名バッファ残りサイズ
+  char *src_buf = bb;
+  size_t src_len = k;
+  if (len == 0 && bb[0] == '/') {
+    src_buf++;      //変換後のパス名の先頭に'/'が来ないようにする
+    src_len--;
+  }
+  if (FUNC_ICONV_S2U(&src_buf, &src_len, &dst_buf, &dst_len) < 0) {
+    return -1;  //変換できなかった
+  }
+  *dst_buf = '\0';
+  return 0;
+}
+
+// errnoをHuman68kのエラーコードに変換する
+static int conv_errno(int err)
+{
+  switch (err) {
+  case ENOENT:
+    return _DOSE_NOENT;
+  case ENOTDIR:
+    return _DOSE_NODIR;
+  case EMFILE:
+    return _DOSE_MFILE;
+  case EISDIR:
+    return _DOSE_ISDIR;
+  case EBADF:
+    return _DOSE_BADF;
+  case ENOMEM:
+    return _DOSE_NOMEM;
+  case EFAULT:
+    return _DOSE_ILGMPTR;
+  case ENOEXEC:
+    return _DOSE_ILGFMT;
+  /* case EINVAL:       // open
+    return _DOSE_ILGARG; */
+  case ENAMETOOLONG:
+    return _DOSE_ILGFNAME;
+  case EINVAL:
+    return _DOSE_ILGPARM;
+  case EXDEV:
+    return _DOSE_ILGDRV;
+  /* case EINVAL:       // rmdir
+    return _DOSE_ISCURDIR; */
+  case EACCES:
+  case EPERM:
+  case EROFS:
+    return _DOSE_RDONLY;
+  /* case EEXIST:       // mkdir
+    return _DOSE_EXISTDIR; */
+  case ENOTEMPTY:
+    return _DOSE_NOTEMPTY;
+  /* case ENOTEMPTY:    // rename
+    return _DOSE_CANTREN; */
+  case ENOSPC:
+    return _DOSE_DISKFULL;
+  /* case ENOSPC:       // create, open
+    return _DOSE_DIRFULL; */
+  case EOVERFLOW:
+    return _DOSE_CANTSEEK;
+  case EEXIST:
+    return _DOSE_EXISTFILE;
+  default:
+    return _DOSE_ILGPARM;
+  }
+}
+
 //****************************************************************************
 // Device driver interrupt rountine
 //****************************************************************************
@@ -274,84 +427,85 @@ int com_init(struct dos_req_header *req)
 }
 
 //****************************************************************************
-// Device driver interrupt rountine
+// Filesystem operations
 //****************************************************************************
 
-int interrupt(void)
+int op_chdir(struct dos_req_header *req)
 {
-  uint16_t err = 0;
-  struct dos_req_header *req = reqheader;
+  hostpath_t path;
 
-  if (setjmp(jenv)) {
+  DNAMEPRINT(req->addr, false, "CHDIR: ");
+
+  if (conv_namebuf(req->unit, req->addr, false, &path) < 0) {
+    DPRINTF1("-> NODIR\r\n");
+    return _DOSE_NODIR;
+  }
+
+  TYPE_STAT st;
+  if (FUNC_STAT(req->unit, NULL, path, &st) != 0 || !STAT_ISDIR(&st)) {
+    DPRINTF1("-> NODIR\r\n");
+    return _DOSE_NODIR;
+  } else {
+    DPRINTF1("-> 0\r\n");
     return 0;
-//    return com_timeout(req);
+  }
+}
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_mkdir(struct dos_req_header *req)
+{
+  hostpath_t path;
+
+  DNAMEPRINT(req->addr, true, "MKDIR: ");
+
+  if (conv_namebuf(req->unit, req->addr, true, &path) < 0) {
+    DPRINTF1("-> NODIR\r\n");
+    return _DOSE_NODIR;
   }
 
-  DPRINTF2("----Command: 0x%02x\r\n", req->command);
+  int err;
+  FUNC_MKDIR(req->unit, &err, path);
+  switch (err) {
+  case EEXIST:
+    DPRINTF1("-> EXISTDIR\r\n");
+    return _DOSE_EXISTDIR;
+  default:
+    err = conv_errno(err);
+    DPRINTF1("-> %d\r\n", err);
+    return err;
+  }
+}
 
-  req->command = (req->command & 0x1f) | (((req->unit + unit_base) & 7) << 5);
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-  switch (((req->command) & 0x1f) | 0x40) {
-  case 0x40: /* init */
-  {
-    req->command = 0; /* for Human68k bug workaround */
-    int r = com_init(req);
-    if (r >= 0) {
-      req->attr = r; /* Number of units */
-      extern char _end;
-      req->addr = &_end;
-      return 0;
-    } else {
-      return -r;
-    }
-    break;
+int op_rmdir(struct dos_req_header *req)
+{
+  hostpath_t path;
+
+  DNAMEPRINT(req->addr, true, "RMDIR: ");
+
+  if (conv_namebuf(req->unit, req->addr, true, &path) < 0) {
+    DPRINTF1("-> NODIR\r\n");
+    return _DOSE_NODIR;
   }
 
-  case 0x41: /* chdir */
-  {
+  int err;
+  FUNC_RMDIR(req->unit, &err, path);
+  switch (err) {
+  case EINVAL:
+    DPRINTF1("-> ISCURDIR\r\n");
+    return _DOSE_ISCURDIR;
+  default:
+    err = conv_errno(err);
+    DPRINTF1("-> %d\r\n", err);
+    return err;
+  }
+}
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
 #if 0
-    struct cmd_dirop *cmd = &comp->cmd_dirop;
-    struct res_dirop *res = &comp->res_dirop;
-    cmd->command = req->command;
-    memcpy(&cmd->path, req->addr, sizeof(struct dos_namestbuf));
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-    DNAMEPRINT(req->addr, false, "CHDIR: ");
-    DPRINTF1(" -> %d\r\n", res->res);
-    req->status = res->res;
-#endif
-    break;
-  }
-
-  case 0x42: /* mkdir */
-  {
-#if 0
-    struct cmd_dirop *cmd = &comp->cmd_dirop;
-    struct res_dirop *res = &comp->res_dirop;
-    cmd->command = req->command;
-    memcpy(&cmd->path, req->addr, sizeof(struct dos_namestbuf));
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-    DNAMEPRINT(req->addr, true, "MKDIR: ");
-    DPRINTF1(" -> %d\r\n", res->res);
-    req->status = res->res;
-#endif
-    break;
-  }
-
-  case 0x43: /* rmdir */
-  {
-#if 0
-    struct cmd_dirop *cmd = &comp->cmd_dirop;
-    struct res_dirop *res = &comp->res_dirop;
-    cmd->command = req->command;
-    memcpy(&cmd->path, req->addr, sizeof(struct dos_namestbuf));
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-    DNAMEPRINT(req->addr, true, "RMDIR: ");
-    DPRINTF1(" -> %d\r\n", res->res);
-    req->status = res->res;
-#endif
-    break;
-  }
-
   case 0x44: /* rename */
   {
 #if 0
@@ -765,6 +919,113 @@ okout_write:
   default:
     break;
   }
+#endif
+
+
+
+
+//****************************************************************************
+// Device driver interrupt rountine
+//****************************************************************************
+
+int interrupt(void)
+{
+  uint16_t err = 0;
+  struct dos_req_header *req = reqheader;
+
+  if (setjmp(jenv)) {
+    return 0;
+//    return com_timeout(req);
+  }
+
+  DPRINTF2("----Command: 0x%02x\r\n", req->command);
+
+  switch (req->command) {
+  case 0x40: /* init */
+  {
+    _vernum = _dos_vernum();
+
+    req->command = 0; /* for Human68k bug workaround */
+    int r = com_init(req);
+    if (r >= 0) {
+      req->attr = r; /* Number of units */
+      extern char _end;
+      req->addr = &_end;
+      return 0;
+    } else {
+      return -r;
+    }
+    break;
+  }
+
+  case 0x41: /* chdir */
+    req->status = op_chdir(req);
+    break;
+  case 0x42: /* mkdir */
+    req->status = op_mkdir(req);
+    break;
+  case 0x43: /* rmdir */
+    req->status = op_rmdir(req);
+    break;
+
+  #if 0
+  case 0x44: /* rename */
+    rsize = op_rename(unit, cbuf, rbuf);
+    break;
+  case 0x45: /* remove */
+    rsize = op_delete(unit, cbuf, rbuf);
+    break;
+  case 0x46: /* chmod */
+    rsize = op_chmod(unit, cbuf, rbuf);
+    break;
+  case 0x47: /* files */
+    rsize = op_files(unit, cbuf, rbuf);
+    break;
+  case 0x48: /* nfiles */
+    rsize = op_nfiles(unit, cbuf, rbuf);
+    break;
+  case 0x49: /* create */
+    rsize = op_create(unit, cbuf, rbuf);
+    break;
+  case 0x4a: /* open */
+    rsize = op_open(unit, cbuf, rbuf);
+    break;
+  case 0x4b: /* close */
+    rsize = op_close(unit, cbuf, rbuf);
+    break;
+  case 0x4c: /* read */
+    rsize = op_read(unit, cbuf, rbuf);
+    break;
+  case 0x4d: /* write */
+    rsize = op_write(unit, cbuf, rbuf);
+    break;
+  case 0x4e: /* seek */
+    req->status = op_seek(req);
+    break;
+  case 0x4f: /* filedate */
+    rsize = op_filedate(unit, cbuf, rbuf);
+    break;
+  case 0x50: /* dskfre */
+    rsize = op_dskfre(unit, cbuf, rbuf);
+    break;
+#endif
+
+  case 0x51: /* drvctrl */
+  case 0x52: /* getdbp */
+  case 0x53: /* diskred */
+  case 0x54: /* diskwrt */
+  case 0x55: /* ioctl */
+  case 0x56: /* abort */
+  case 0x57: /* mediacheck */
+  case 0x58: /* lock */
+    req->status = 0;
+    break;
+
+  default:
+    req->status = 0;
+    err = 0x1003;  // 不正なコマンドコード
+  }
+
 
   return err;
 }

@@ -26,47 +26,11 @@
 #define _HUMANDEFS_H_
 
 #include <stdint.h>
+#include <x68k/dos.h>
 
 //****************************************************************************
 // Human68k error code
 //****************************************************************************
-
-#ifndef _DOSE_ILGFNC
-#define _DOSE_ILGFNC    -1
-#define _DOSE_NOENT     -2
-#define _DOSE_NODIR     -3
-#define _DOSE_MFILE     -4
-#define _DOSE_ISDIR     -5
-#define _DOSE_BADF      -6
-#define _DOSE_BROKNMEM  -7
-#define _DOSE_NOMEM     -8
-#define _DOSE_ILGMPTR   -9
-#define _DOSE_ILGENV    -10
-#define _DOSE_ILGFMT    -11
-#define _DOSE_ILGARG    -12
-#define _DOSE_ILGFNAME  -13
-#define _DOSE_ILGPARM   -14
-#define _DOSE_ILGDRV    -15
-#define _DOSE_ISCURDIR  -16
-#define _DOSE_CANTIOC   -17
-#define _DOSE_NOMORE    -18
-#define _DOSE_RDONLY    -19
-#define _DOSE_EXISTDIR  -20
-#define _DOSE_NOTEMPTY  -21
-#define _DOSE_CANTREN   -22
-#define _DOSE_DISKFULL  -23
-#define _DOSE_DIRFULL   -24
-#define _DOSE_CANTSEEK  -25
-#define _DOSE_SUPER     -26
-#define _DOSE_DUPTHNAM  -27
-#define _DOSE_CANTSEND  -28
-#define _DOSE_THFULL    -29
-#define _DOSE_LCKFULL   -32
-#define _DOSE_LCKERR    -33
-#define _DOSE_BUSYDRV   -34
-#define _DOSE_SYMLOOP   -35
-#define _DOSE_EXISTFILE -80
-#endif
 
 //****************************************************************************
 // Human68k structures
@@ -96,8 +60,10 @@ struct dos_filesinfo {
   uint16_t date;
   uint32_t filelen;
   char name[23];
-} __attribute__((packed, aligned(2)));
+} __attribute__((packed, aligned(2)));  // part of dos_filbuf
 
+typedef struct dos_namestbuf dos_namebuf;
+#if 0
 typedef struct {
   uint8_t flag;
   uint8_t drive;
@@ -105,6 +71,7 @@ typedef struct {
   uint8_t name1[8];
   uint8_t ext[3];
   uint8_t name2[10];
-} dos_namebuf;
+} dos_namebuf;    // == struct dos_namestbuf
+#endif
 
 #endif /* _HUMANDEFS_H_ */
