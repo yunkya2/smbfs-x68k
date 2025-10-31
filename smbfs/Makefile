@@ -44,14 +44,18 @@ DEFS += -DDEBUG
 endif
 
 OBJS = head.o smbfs.o
-DEPS = $(OBJS:.o=.d)
+
+LIBSMB2 = libsmb2.a
+LIBS += libsmb2.a
 
 all: smbfs.sys
 
-smbfs.sys: $(OBJS)
+smbfs.sys: $(OBJS) $(LIBSMB2)
 	$(LD) -o $@ $^ $(LDFLAGS)
 
-vpath %.h ../include
+$(LIBSMB2):
+	$(MAKE) -C ../libsmb2/x68k
+	cp ../libsmb2/x68k/$@ .
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $<
@@ -59,9 +63,11 @@ vpath %.h ../include
 %.o: %.S
 	$(AS) $(ASFLAGS) -c $<
 
+DEPS = $(OBJS:.o=.d)
+
 clean:
-	-rm -f $(OBJS) $(DEPS) *.o *.sys *.elf*
+	-rm -f $(OBJS) $(DEPS) $(LIBSMB2) *.sys *.elf*
 
 -include $(DEPS)
 
-.PHONY: all clean
+.PHONY: all clean $(LIBSMB2)
