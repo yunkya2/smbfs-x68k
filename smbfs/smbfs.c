@@ -61,9 +61,10 @@ struct smb2_context *path2smb2(const char *path, const char **shpath);
 
 typedef char hostpath_t[256];
 
-struct dos_req_header *reqheader;   // Human68kからのリクエストヘッダ
-jmp_buf jenv;                       // タイムアウト時のジャンプ先
-int unit_base = 0;                  // ユニット番号のベース値  (必要? TBD *****)
+extern struct dos_devheader devheader;  // Human68kのデバイスヘッダ
+struct dos_req_header *reqheader;       // Human68kからのリクエストヘッダ
+
+//jmp_buf jenv;                       // タイムアウト時のジャンプ先
 
 const char *rootpath[8];                // 各ユニットのホストパス
 struct smb2_context *smb2 = NULL;
@@ -76,6 +77,11 @@ uint32_t _vernum;
 
 char ** const environ_none = { NULL };
 char **environ;
+
+
+
+
+
 
 uint16_t stack[32 * 1024];
 
@@ -120,7 +126,6 @@ void DNAMEPRINT(void *n, bool full, char *head)
 // Utility routine
 //****************************************************************************
 
-
 // 与えられたpath先頭の共有名パートを抜き出して、その共有名に対応するsmb2_contextを返す
 // 共有名に続くパスをshpathに返す
 
@@ -133,7 +138,7 @@ struct smb2_context *path2smb2(const char *path, const char **shpath)
   return smb2;
 }
 
-//////////////////////////////////////////////////////////////////////////////
+//----------------------------------------------------------------------------
 
 // struct statのファイル情報を変換する
 static void conv_statinfo(TYPE_STAT *st, void *v)
@@ -268,9 +273,29 @@ static int conv_errno(int err)
   }
 }
 
-//****************************************************************************
-// Device driver interrupt rountine
-//****************************************************************************
+//----------------------------------------------------------------------------
+
+// 次のデバイスが next となるデバイスヘッダを探す
+static struct dos_devheader *find_devheader(struct dos_devheader *next)
+{
+  // Human68kからNULデバイスドライバを探す
+  char *p = *(char **)0x001c20;   // 先頭のメモリブロック
+  while (memcmp(p, "NUL     ", 8) != 0) {
+    p += 2;
+  }
+
+  // デバイスドライバのリンクをたどって next の前のデバイスヘッダを探す
+  struct dos_devheader *devh = (struct dos_devheader *)(p - 14);
+  while (devh->next != (struct dos_devheader *)-1) {
+    if (devh->next == next) {
+      return devh;
+    }
+    devh = devh->next;
+  }
+  return NULL;
+}
+
+//----------------------------------------------------------------------------
 
 static int my_atoi(char *p)
 {
@@ -280,6 +305,10 @@ static int my_atoi(char *p)
   }
   return res;
 }
+
+//****************************************************************************
+// Device driver interrupt rountine
+//****************************************************************************
 
 int com_init(struct dos_req_header *req)
 {
@@ -1353,10 +1382,10 @@ int interrupt(void)
   uint16_t err = 0;
   struct dos_req_header *req = reqheader;
 
-  if (setjmp(jenv)) {
-    return 0;
+//  if (setjmp(jenv)) {
+//    return 0;
 //    return com_timeout(req);
-  }
+//  }
 
   DPRINTF2("----Command: 0x%02x\r\n", req->command);
 
@@ -1467,14 +1496,9 @@ int interrupt(void)
 // Program entry
 //****************************************************************************
 
-extern struct dos_devheader devheader;
-
-struct dos_dpb dummy_dpb = {
-  0,
-  0,
-  &devheader,
-  0,
-  0
+struct dos_dpb smbfs_dpb = {
+  .devheader = &devheader,
+  .next = (struct dos_dpb *)-1,
 };
 
 struct dos_comline *cmdline;
@@ -1514,9 +1538,10 @@ void _start()
   struct dos_dpb *dpb;
   struct dos_curdir *curdir;
 
+  // Human68kのカレントディレクトリテーブルからsmbfsの常駐状況を確認する
   realdrv = -1;
   for (drv = 0; drv < 26; drv++) {
-    realdrv = drvxtbl[drv];
+    realdrv = drvxtbl[drv];   // 物理ドライブ番号
     curdir = &curdir_table[realdrv];
     if (curdir->type == 0x40) {
       dpb = curdir->dpb;
@@ -1526,24 +1551,43 @@ void _start()
     }
   }
 
+  ////////////////////////////////////////////////////////////////////////////
+  // 常駐解除処理
+
   if (drv < 26) {
     // 常駐解除
     // TODO: バッファフラッシュ
     // TODO: ディレクトリ移動、subst設定時の対応
 //    printf("free %c: %p\n", 'A' + drv, dpb->devheader);
+
+    // デバイスドライバのリンクリストからsmbfsを外す
+    struct dos_devheader *prev = find_devheader(dpb->devheader);
+    if (prev != NULL) {
+      prev->next = dpb->devheader->next;
+    }
+
+    // Human68kのカレントディレクトリテーブルからsmbfsを外す
     curdir->type = 0;
-    struct dos_dpb *olddpb = (struct dos_dpb *)((char *)dpb->devheader + ((char *)&dummy_dpb - (char *)&devheader));
+    struct dos_dpb *olddpb = (struct dos_dpb *)((char *)dpb->devheader + ((char *)&smbfs_dpb - (char *)&devheader));
     for (int i = 0; i < 26; i++) {
       if (curdir_table[i].type == 0x40 &&
         curdir_table[i].dpb->next == olddpb) {
         curdir_table[i].dpb->next = olddpb->next;
       }
     }
-     printf("ドライブ %c: のSMBFSをマウント解除しました\n", 'A' + drv);
+
+    // 接続ドライブ数を減少
+    (*(uint8_t *)0x1c75)--;
+
+    printf("ドライブ %c: のSMBFSを常駐解除しました\n", 'A' + drv);
     _dos_mfree((char *)dpb->devheader - 0xf0);
     _dos_exit();
   }
 
+  ////////////////////////////////////////////////////////////////////////////
+  // 常駐処理
+
+  // 空いているドライブを探す
   realdrv = -1;
   for (drv = 0; drv < 26; drv++) {
     realdrv = drvxtbl[drv];
@@ -1551,15 +1595,13 @@ void _start()
       break;
     }
   }
-  if (realdrv < 0 || realdrv > *(char *)0x1c73) {
+  if (realdrv < 0 || realdrv > *(char *)0x1c73) {   // LASTDRIVEを超えている
     printf("割り当て可能なドライブがありません\n");
     _dos_exit();
   }
 
-  dummy_dpb.drive = realdrv; 
-  dummy_dpb.next = (void *)-1;
-
-#if 1
+  // Human68kのDPBリストにsmbfsのDPBを繋ぐ
+  smbfs_dpb.drive = realdrv; 
   struct dos_dpb *prev_dpb = NULL;
   for (int i = 0; i < realdrv; i++) {
     if (curdir_table[i].type == 0x40) {
@@ -1567,24 +1609,31 @@ void _start()
     }
   }
   if (prev_dpb != NULL) {
-    dummy_dpb.next = prev_dpb->next;
-    prev_dpb->next = &dummy_dpb;
+    smbfs_dpb.next = prev_dpb->next;
+    prev_dpb->next = &smbfs_dpb;
   }
 
+  // Human68kのカレントディレクトリテーブルを設定する
   curdir = &curdir_table[realdrv];
   curdir->drive = 'A' + realdrv;
   curdir->coron = ':';
   curdir->path[0] = '\t';
   curdir->path[1] = '\0';
   curdir->type = 0x40;
-  curdir->dpb = &dummy_dpb;
+  curdir->dpb = &smbfs_dpb;
   curdir->fatno = (int)-1;
   curdir->pathlen = 2;
-#endif
 
-  // TODO: device header chainを繋ぐ
+  // デバイスドライバのリンクリストにsmbfsを繋ぐ
+  struct dos_devheader *prev = find_devheader((struct dos_devheader *)-1);
+  if (prev != NULL) {
+    prev->next = &devheader;
+  }
 
-  printf("常駐しました。ドライブ %c: をSMBFSとして使用できます\n", 'A' + drv);
+    // 接続ドライブ数を増加
+    (*(uint8_t *)0x1c75)++;
+
+    printf("常駐しました。ドライブ %c: をSMBFSとして使用できます\n", 'A' + drv);
 
   _dos_keeppr((int)&_end - (int)&devheader, 0);
 }

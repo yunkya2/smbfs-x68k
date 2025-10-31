@@ -36,6 +36,7 @@ void *sbrk(ptrdiff_t incr)
       ;
   }
 
+#if 0
   _iocs_b_print("sbrk: ");
   puthex((int)incr);
   _iocs_b_print(" ");
@@ -43,6 +44,8 @@ void *sbrk(ptrdiff_t incr)
   _iocs_b_print(" ");
   puthex((int)new_heap_end);
   _iocs_b_print("\r\n");
+#endif
+
   heap_end = new_heap_end;
 
   return (void *)prev_heap_end;

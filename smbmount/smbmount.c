@@ -347,7 +347,10 @@ int main(int argc, char **argv)
     res  = _dos_ioctrlfdctl(drive, SMBCMD_MOUNT, (void *)&mount_info);
   }
 
-  printf("res=%d\n", res);
+  if (res < 0) {
+    printf("ドライブ %c: のSMBFSマウントに失敗しました (エラーコード: %d)\n", 'A' + drive - 1, res);
+    exit(1);
+  }
 
   return 0;
 }
