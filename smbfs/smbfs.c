@@ -763,207 +763,64 @@ int dl_readdir(dirlist_t *dl, void *v)
   return 0;   // もうファイルがない
 }
 
-#if 0
-
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-int op_files(int unit, uint8_t *cbuf, uint8_t *rbuf)
+int op_files(struct dos_req_header *req)
 {
-  struct cmd_files *cmd = (struct cmd_files *)cbuf;
-  struct res_files *res = (struct res_files *)rbuf;
   dirlist_t *dl;
+  struct dos_filbuf *fb = (struct dos_filbuf *)req->status;
 
-  res->res = _DOSE_NOMORE;
-#if CONFIG_NFILEINFO > 1
-  res->num = 0;
-#endif
+  DNAMEPRINT(req->addr, true, "FILES: ");
+  DPRINTF1("\n");
 
-  int err = dl_opendir(&dl, unit, cmd);
+  int err = dl_opendir(&dl, req);
   if (err) {
     switch (err) {
     case ENOENT:
-      res->res = _DOSE_NODIR;    //ディレクトリが存在しない場合に_DOSE_NOENTを返すと正常動作しない
-      break;
+      DPRINTF1("-> NODIR\r\n");
+      return _DOSE_NODIR;    //ディレクトリが存在しない場合に_DOSE_NOENTを返すと正常動作しない
     default:
-      res->res = conv_errno(err);
-      break;
+      err = conv_errno(err);
+      DPRINTF1("-> %d\r\n", err);
+      return err;
     }
-    goto errout;
   }
 
-  int n = CONFIG_NFILEINFO;
-#if CONFIG_NFILEINFO > 1
-  n = n > cmd->num ? cmd->num : n;
-#endif
-  
-  for (int i = 0; i < n; i++) {
-    if (dl_readdir(dl, &res->file[i]) == 0) {
-      break;
-    }
-#if CONFIG_NFILEINFO > 1
-    res->num++;
-#endif
-    res->res = 0;
-    DPRINTF1("(%d/%d) %s\n", i, n, res->file[i].name);
+  if (dl_readdir(dl, &fb->ext[2]) == 0) {
+    DPRINTF1("-> NOMORE\r\n");
+    return _DOSE_NOMORE;
   }
 
-errout:
-#if CONFIG_NFILEINFO > 1
-  DPRINTF1("FILES: 0x%08x 0x%02x %d %s -> ", cmd->filep, cmd->attr, cmd->num, dl->hostpath);
-#else
-  DPRINTF1("FILES: 0x%08x 0x%02x %s -> ", cmd->filep, cmd->attr, dl->hostpath);
-#endif
-  DPRINTF1("%d\n", res->res);
-
-  return sizeof(*res);
+  DPRINTF1("FILES: attr=0x%02x filep=0x%08x -> %s\r\n", req->attr, req->status, fb->name);
+  return 0;
 }
-
-
-
-#if 0
-
-case 0x47: /* files */
-  {
-#if 0
-    struct cmd_files *cmd = &comp->cmd_files;
-    struct res_files *res = &comp->res_files;
-    cmd->command = req->command;
-    cmd->attr = req->attr;
-    cmd->filep = req->status;
-    memcpy(&cmd->path, req->addr, sizeof(struct dos_namestbuf));
-#if CONFIG_NFILEINFO > 1
-    struct fcache *fc = fcache_alloc(cmd->filep, true);
-    if (fc) {
-      fc->filep = cmd->filep;
-      fc->cnt = 0;
-      cmd->num = CONFIG_NFILEINFO;
-    } else {
-      cmd->num = 1;
-    }
-#endif
-
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-
-    struct dos_filbuf *fb = (struct dos_filbuf *)req->status;
-#if CONFIG_NFILEINFO > 1
-    if (fc) {
-      if (res->res == 0 && res->num > 1) {
-        fc->files = *res;
-        fc->cnt = 1;
-      } else {
-        fc->filep = 0;
-      }
-    }
-#endif
-    if (res->res == 0)
-      memcpy(&fb->atr, &res->file[0].atr, sizeof(res->file[0]) - 1);
-    DNAMEPRINT(req->addr, false, "FILES: ");
-    DPRINTF1(" attr=0x%02x filep=0x%08x -> %d %s\r\n", req->attr, req->status, res->res, res->file[0].name);
-    req->status = res->res;
-#endif
-    break;
-  }
-#endif
-#endif
-
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 int op_nfiles(struct dos_req_header *req)
 {
-#if 0
-  struct cmd_nfiles *cmd = (struct cmd_nfiles *)cbuf;
-  struct res_nfiles *res = (struct res_nfiles *)rbuf;
   dirlist_t *dl;
+  struct dos_filbuf *fb = (struct dos_filbuf *)req->status;
 
-  res->res = _DOSE_NOMORE;
-#if CONFIG_NFILEINFO > 1
-  res->num = 0;
-#endif
+  DPRINTF1("NFILES: ");
 
-  if (dl = dl_alloc(cmd->filep, false)) {
-    int n = CONFIG_NFILEINFO;
-#if CONFIG_NFILEINFO > 1
-    n = n > cmd->num ? cmd->num : n;
-#endif
-
-    for (int i = 0; i < n; i++) {
-      if (dl_readdir(dl, &res->file[i]) == 0) {
-        break;
-      }
-#if CONFIG_NFILEINFO > 1
-      res->num++;
-#endif
-      res->res = 0;
-      DPRINTF1("(%d/%d) %s\n", i, n, res->file[i].name);
-    }
+    if ((dl = dl_alloc(req->status, false)) == NULL) {
+    DPRINTF1("-> ILGARG\r\n");
+    return _DOSE_ILGARG;
   }
 
-#if CONFIG_NFILEINFO > 1
-  DPRINTF1("NFILES: 0x%08x %d -> ", cmd->filep, cmd->num);
-#else
-  DPRINTF1("NFILES: 0x%08x -> ", cmd->filep);
-#endif
-  DPRINTF1("%d\n", res->res);
-
-  return sizeof(*res);
-}
-
-
-case 0x48: /* nfiles */
-  {
-#if 0
-    struct cmd_nfiles *cmd = &comp->cmd_nfiles;
-    struct res_nfiles *res = &comp->res_nfiles;
-    cmd->command = req->command;
-    cmd->filep = req->status;
-
-    struct dos_filbuf *fb = (struct dos_filbuf *)req->status;
-#if CONFIG_NFILEINFO > 1
-    struct fcache *fc;
-    if (fc = fcache_alloc(cmd->filep, false)) {
-      memcpy(&fb->atr, &fc->files.file[fc->cnt].atr, sizeof(fc->files.file[0]) - 1);
-      fc->cnt++;
-      res->res = 0;
-      if (fc->cnt >= fc->files.num) {
-        fc->filep = 0;
-      }
-      goto out_nfiles;
-    }
-    if (fc = fcache_alloc(cmd->filep, true)) {
-      fc->filep = cmd->filep;
-      fc->cnt = 0;
-      cmd->num = CONFIG_NFILEINFO;
-    } else {
-      cmd->num = 1;
-    }
-#endif
-
-    com_cmdres(cmd, sizeof(*cmd), res, sizeof(*res));
-
-#if CONFIG_NFILEINFO > 1
-    if (fc) {
-      if (res->res == 0 && res->num > 1) {
-        fc->files = *(struct res_files *)res;
-        fc->cnt = 1;
-      } else {
-        fc->filep = 0;
-      }
-    }
-#endif
-    if (res->res == 0)
-      memcpy(&fb->atr, &res->file[0].atr, sizeof(res->file[0]) - 1);
-out_nfiles:
-    DPRINTF1("NFILES: filep=0x%08x -> %d %s\r\n", req->status, res->res, fb->name);
-    req->status = res->res;
-#endif
-    break;
+  if (dl_readdir(dl, &fb->ext[2]) == 0) {
+    DPRINTF1("-> NOMORE\r\n");
+    return _DOSE_NOMORE;
   }
-#endif
+
+  DPRINTF1("-> %s\r\n", fb->name);
   return 0;
 }
 
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+//****************************************************************************
+// File operations
+//****************************************************************************
 
 int op_create(struct dos_req_header *req)
 {
@@ -1643,13 +1500,14 @@ int interrupt(void)
     req->status = op_chmod(req);
     break;
 
-  #if 0
   case 0x47: /* files */
-    rsize = op_files(unit, cbuf, rbuf);
+    req->status  = op_files(req);
     break;
   case 0x48: /* nfiles */
-    rsize = op_nfiles(unit, cbuf, rbuf);
+    req->status  = op_nfiles(req);
     break;
+
+    #if 0
   case 0x49: /* create */
     rsize = op_create(unit, cbuf, rbuf);
     break;
@@ -1671,10 +1529,12 @@ int interrupt(void)
   case 0x4f: /* filedate */
     rsize = op_filedate(unit, cbuf, rbuf);
     break;
-  case 0x50: /* dskfre */
-    rsize = op_dskfre(unit, cbuf, rbuf);
-    break;
 #endif
+
+case 0x50: /* dskfre */
+//    req->status = op_dskfre(req);
+    req->status = 0;
+    break;
 
   case 0x51: /* drvctrl */
     req->status = op_drvctrl(req);
