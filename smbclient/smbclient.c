@@ -54,7 +54,6 @@
 //****************************************************************************
 
 #define PATH_LEN 256
-#define TIMEZONE (9 * 3600) // JST (UTC+9)
 
 //****************************************************************************
 // Global variables
@@ -379,7 +378,6 @@ static const char *format_time(uint64_t timestamp)
   static char time_str[64];
   time_t t = (time_t)timestamp;
 
-  t += TIMEZONE;
   struct tm *tm_info = localtime(&t);
   
   if (tm_info) {
@@ -804,7 +802,7 @@ static int get_one_file(struct smb2_context *smb2, const char *target_remote, co
 
   struct smb2_stat_64 st;
   if (smb2_fstat(smb2, fh, &st) == 0) {
-    time_t mtime = (time_t)st.smb2_mtime + TIMEZONE;
+    time_t mtime = (time_t)st.smb2_mtime;
     struct tm *tm = localtime(&mtime);
     uint32_t datetime;
     datetime = ((tm->tm_year - 80) << 25) |
@@ -1055,7 +1053,7 @@ static int put_one_file(struct smb2_context *smb2, const char *target_local, con
     tm.tm_hour = (datetime >> 11) & 0x1f;
     tm.tm_min  = (datetime >> 5) & 0x3f;
     tm.tm_sec  = (datetime << 1) & 0x3f;
-    time_t mtime = mktime(&tm) - TIMEZONE;
+    time_t mtime = mktime(&tm);
     tv[0].tv_sec = mtime;
     tv[0].tv_usec = 0;
     tv[1].tv_sec = mtime;
