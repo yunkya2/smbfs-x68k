@@ -408,21 +408,6 @@ static const char *format_size(uint64_t size)
   return size_str;
 }
 
-static const char *format_uint64(uint64_t value)
-{
-  static char buf[32];
-  char *p = buf;
-
-  if (value >= 1000000000ULL) {
-    sprintf(p, "%lu", (unsigned long)(value / 1000000000ULL));
-    p += strlen(buf);
-    sprintf(p, "%09lu", (unsigned long)(value % 1000000000ULL));
-  } else {
-    sprintf(p, "%lu", (unsigned long)value);
-  }
-  return buf;
-}
-
 //****************************************************************************
 // Command implementations
 //****************************************************************************
@@ -688,8 +673,8 @@ static int cmd_stat(struct smb2_context *smb2, const char *path)
   
   printf("File: %s\n", target_path);
   printf("Type: %s\n", type);
-  printf("Size: %s (%s bytes)\n", format_size(st.smb2_size), format_uint64(st.smb2_size));
-  printf("Inode: %s\n", format_uint64(st.smb2_ino));
+  printf("Size: %llu (%llu bytes)\n", st.smb2_size, st.smb2_size);
+  printf("Inode: %llu\n", st.smb2_ino);
   printf("Links: %lu\n", (unsigned long)st.smb2_nlink);
   printf("Access time: %s\n", format_time(st.smb2_atime));
   printf("Modify time: %s\n", format_time(st.smb2_mtime));
@@ -726,11 +711,11 @@ static int cmd_statvfs(struct smb2_context *smb2, const char *path)
   
   printf("Filesystem statistics for: %s\n", target_path);
   printf("Block size:       %lu bytes\n", (unsigned long)statvfs.f_bsize);
-  printf("Total blocks:     %s\n", format_uint64(statvfs.f_blocks));
-  printf("Free blocks:      %s\n", format_uint64(statvfs.f_bfree));
-  printf("Total space:      %s (%s bytes)\n", format_size(total_space), format_uint64(total_space));
-  printf("Used space:       %s (%s bytes)\n", format_size(used_space), format_uint64(used_space));
-  printf("Free space:       %s (%s bytes)\n", format_size(free_space), format_uint64(free_space));
+  printf("Total blocks:     %llu\n", statvfs.f_blocks);
+  printf("Free blocks:      %llu\n", statvfs.f_bfree);
+  printf("Total space:      %s (%llu bytes)\n", format_size(total_space), total_space);
+  printf("Used space:       %s (%llu bytes)\n", format_size(used_space), used_space);
+  printf("Free space:       %s (%llu bytes)\n", format_size(free_space), free_space);
   printf("Usage:            %.1f%%\n", usage_percent);
   return 0;
 }
