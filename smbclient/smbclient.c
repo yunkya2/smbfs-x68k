@@ -1713,7 +1713,10 @@ int main(int argc, char *argv[])
   } else {
     // Interactive mode
     pthread_mutex_lock(&keepalive_mutex);
-    if (pthread_create(&keepalive_thread, NULL, keepalive_thread_func, smb2) != 0) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setname_np(&attr, "smb_keepalive");
+    if (pthread_create(&keepalive_thread, &attr, keepalive_thread_func, smb2) != 0) {
       printf("Failed to create keepalive thread\n");
       smb2_disconnect_share(smb2);
       smb2_destroy_context(smb2);
