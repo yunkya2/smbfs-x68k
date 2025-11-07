@@ -1250,19 +1250,19 @@ int op_ioctl(struct dos_req_header *req)
       environ = mnt->environ;
 
       struct smb2_url *url = smb2_parse_url(smb2, mnt->url);
-      if (url == NULL) {
+      if (url == NULL) {  // URL解析に失敗した
         environ = environ_none;
         smb2_destroy_context(smb2);
         return -1;
       }
 
-      if (url->user) {
+      if (url->user) {                                  // URLにユーザ名が含まれている
         smb2_set_user(smb2, url->user);
       }
-      if (mnt->username && mnt->username[0] != '\0') {
+      if (mnt->username && mnt->username[0] != '\0') {  // マウント時にユーザ名が指定されている
         smb2_set_user(smb2, mnt->username);
       }
-      if (mnt->password) {
+      if (mnt->password) {                              // マウント時にパスワードが指定されている
         smb2_set_password(smb2, mnt->password);
       }
 
@@ -1272,8 +1272,11 @@ int op_ioctl(struct dos_req_header *req)
       // 環境変数を元に戻す
       environ = environ_none;
 
+      // NTLM_USER_FILEにパスワードがなく、マウント時のパスワード指定もない場合はユーザに問い合わせる
       if (smb2->password == NULL) {
-        strcpy(mnt->username, smb2->user);
+        strncpy(mnt->username, smb2->user, mnt->username_len);
+        mnt->username[mnt->username_len - 1] = '\0';
+        mnt->username_len = strlen(smb2->user) + 1;
         smb2_destroy_url(url);
         smb2_destroy_context(smb2);
         DPRINTF1("  -> NOPASS\r\n");
@@ -1328,6 +1331,33 @@ int op_ioctl(struct dos_req_header *req)
     rootpath[unit] = NULL;
 
     DPRINTF1(" unmounted\r\n");
+    return 0;
+
+  case SMBCMD_GETMOUNT:
+    DPRINTF1(" GETMOUNT\r\n");
+    if (rootsmb2[unit] == NULL) {
+      DPRINTF1(" not mounted\r\n");
+      return -1;
+    }
+
+    struct smbcmd_getmount *mnt = (struct smbcmd_getmount *)req->addr;
+
+    strncpy(mnt->server, rootsmb2[unit]->server, mnt->server_len);
+    mnt->server[mnt->server_len - 1] = '\0';
+    mnt->server_len = strlen(rootsmb2[unit]->server) + 1;
+
+    strncpy(mnt->share, rootsmb2[unit]->share, mnt->share_len);
+    mnt->share[mnt->share_len - 1] = '\0';
+    mnt->share_len = strlen(rootsmb2[unit]->share) + 1;
+
+    strncpy(mnt->rootpath, rootpath[unit], mnt->rootpath_len);
+    mnt->rootpath[mnt->rootpath_len - 1] = '\0';
+    mnt->rootpath_len = strlen(rootpath[unit]) + 1;
+
+    strncpy(mnt->username, rootsmb2[unit]->user, mnt->username_len);
+    mnt->username[mnt->username_len - 1] = '\0';
+    mnt->username_len = strlen(rootsmb2[unit]->user) + 1;
+
     return 0;
 
   case SMBCMD_GETTIME:

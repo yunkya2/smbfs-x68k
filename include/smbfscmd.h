@@ -26,6 +26,7 @@
 #define _SMBFSCMD_H_
 
 #include <stdint.h>
+#include <stddef.h>
 
 #define SMBFS_SIGNATURE     "SMBFSv1 "
 
@@ -33,15 +34,27 @@
 #define SMBCMD_NOP          0
 #define SMBCMD_MOUNT        1
 #define SMBCMD_UNMOUNT      2
-#define SMBCMD_SHAREENUM    3
+#define SMBCMD_GETMOUNT     3
+#define SMBCMD_SHAREENUM    5
 #define SMBCMD_GETTIME      10
 
 struct smbcmd_mount {
-    int mode;
+    size_t username_len;
     char *url;
     char *username;
     char *password;
     char **environ;
+};
+
+struct smbcmd_getmount {
+    size_t server_len;
+    size_t share_len;
+    size_t rootpath_len;
+    size_t username_len;
+    char *server;
+    char *share;
+    char *rootpath;
+    char *username;
 };
 
 struct smbcmd_shareenum {

@@ -302,53 +302,89 @@ int main(int argc, char **argv)
   }
 
   ////////////////////////////////////////////////////////////////////////////
+  // マウント処理
 
-  if (url_index == 0) {
-    // URLが指定されていない
-    usage();
-    exit(1);
+  if (url_index != 0) {
+    convert_path_separator(argv[url_index]);
+    char *normalized_url = normalize_smb_url(argv[url_index]);
+
+    drive = get_smbfs_drive(drive);
+    if (drive < 0) {
+      exit(1);
+    }
+
+    char username_buf[64];
+    username_buf[0] = '\0';
+    if (username != NULL) {
+      strncpy(username_buf, username, sizeof(username_buf) - 1);
+      username_buf[sizeof(username_buf) - 1] = '\0';
+    }
+
+    struct smbcmd_mount mount_info = {
+      .url = normalized_url,
+      .username = username_buf,
+      .password = password,
+      .environ = environ,
+    };
+    mount_info.username_len = sizeof(username_buf);
+
+    int res;
+    res  = _dos_ioctrlfdctl(drive, SMBCMD_MOUNT, (void *)&mount_info);
+    if (res == -2) {
+      printf("ユーザ名 %s のパスワードを入力: ", mount_info.username);
+      char *password = getpass("");
+      if (password == NULL) {
+        exit(1);
+      }
+      mount_info.password = password;
+      res  = _dos_ioctrlfdctl(drive, SMBCMD_MOUNT, (void *)&mount_info);
+    }
+
+    if (res < 0) {
+      printf("ドライブ %c: のSMBFSマウントに失敗しました (エラーコード: %d)\n", 'A' + drive - 1, res);
+      exit(1);
+    }
+
+    return 0;
   }
 
   ////////////////////////////////////////////////////////////////////////////
-  // マウント処理
+  // マウント状態の表示
 
-  convert_path_separator(argv[url_index]);
-  char *normalized_url = normalize_smb_url(argv[url_index]);
-
-  drive = get_smbfs_drive(drive);
-  if (drive < 0) {
-    exit(1);
-  }
-
-  char username_buf[64];
-  username_buf[0] = '\0';
-  if (username != NULL) {
-    strncpy(username_buf, username, sizeof(username_buf) - 1);
-    username_buf[sizeof(username_buf) - 1] = '\0';
-  }
-
-  struct smbcmd_mount mount_info = {
-    .url = normalized_url,
-    .username = username_buf,
-    .password = password,
-    .environ = environ,
-  };
-
-  int res;
-  res  = _dos_ioctrlfdctl(drive, SMBCMD_MOUNT, (void *)&mount_info);
-  if (res == -2) {
-    printf("ユーザ名 %s のパスワードを入力: ", mount_info.username);
-    char *password = getpass("");
-    if (password == NULL) {
+  {
+    drive = get_smbfs_drive(0);
+    if (drive < 0) {
       exit(1);
     }
-    mount_info.password = password;
-    res  = _dos_ioctrlfdctl(drive, SMBCMD_MOUNT, (void *)&mount_info);
-  }
 
-  if (res < 0) {
-    printf("ドライブ %c: のSMBFSマウントに失敗しました (エラーコード: %d)\n", 'A' + drive - 1, res);
-    exit(1);
+    char server[64];
+    char share[64];
+    char rootpath[PATH_LEN];
+    char username[64];
+
+    struct smbcmd_getmount getmount_info ={
+      .server_len = sizeof(server),
+      .share_len = sizeof(share),
+      .rootpath_len = sizeof(rootpath),
+      .username_len = sizeof(username),
+      .server = server,
+      .share = share,
+      .rootpath = rootpath,
+      .username = username,
+    };
+
+    int res = _dos_ioctrlfdctl(drive, SMBCMD_GETMOUNT, (void *)&getmount_info);
+
+    printf("%c: ", 'A' + drive - 1);
+    if (res < 0) {
+      printf("--\n");
+    } else {
+      printf("//%s@%s/%s/%s\n",
+             getmount_info.username,
+             getmount_info.server,
+             getmount_info.share,
+             getmount_info.rootpath);
+    }
   }
 
   return 0;
