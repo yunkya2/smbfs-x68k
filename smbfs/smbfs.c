@@ -124,6 +124,8 @@ void DNAMEPRINT(void *n, bool full, char *head)
 // Utility routine
 //****************************************************************************
 
+void __socket_register_at_exit(void) {}
+
 // 与えられたpath先頭の共有名パートを抜き出して、その共有名に対応するsmb2_contextを返す
 // 共有名に続くパスをshpathに返す
 
