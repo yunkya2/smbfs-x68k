@@ -53,8 +53,6 @@ struct smb2_context *path2smb2(const char *path, const char **shpath);
 
 #include "fileop.h"
 
-#define TIMEZONE (9 * 3600) // JST (UTC+9)
-
 //****************************************************************************
 // Global variables
 //****************************************************************************
@@ -148,7 +146,6 @@ static void conv_statinfo(TYPE_STAT *st, void *v)
   f->atr = FUNC_FILEMODE_ATTR(st);
   f->filelen = htobe32(STAT_SIZE(st));
   time_t mtime = STAT_MTIME(st);
-  mtime += TIMEZONE;
   struct tm *tm = localtime(&mtime);
   f->time = htobe16(tm->tm_hour << 11 | tm->tm_min << 5 | tm->tm_sec >> 1);
   f->date = htobe16((tm->tm_year - 80) << 9 | (tm->tm_mon + 1) << 5 | tm->tm_mday);
