@@ -200,15 +200,13 @@ int get_smbfs_drive(int drive)
       }
     }
     if (drive > 26) {
-      printf("SMBFSが常駐していません\n");
-      return -1;
+      return -1;    // SMBFSドライブが見つからなかった
     }
   }
 
   if (_dos_ioctrlfdctl(drive, SMBCMD_GETNAME, signature) != 0 ||
       memcmp(signature, SMBFS_SIGNATURE, 8) != 0) {
-    printf("ドライブ %c: はSMBFSではありません\n", 'A' + drive - 1);
-    return -1;
+    return 0;       // 指定したドライブはSMBFSではない
   }
 
   return drive;
@@ -261,7 +259,7 @@ int main(int argc, char **argv)
     } else if (strlen(argv[i]) == 2 && argv[i][1] == ':' &&
                isalpha((unsigned char)argv[i][0])) {
       drive = toupper((unsigned char)argv[i][0]) - 'A' + 1;
-    } else if (url_index == 0) {
+    } else if (argv[i][0] != '-' && url_index == 0) {
       url_index = i;  // First non-option argument is URL
     } else {
       // Unknown option
@@ -291,13 +289,16 @@ int main(int argc, char **argv)
       exit(0);
     }
 
-    drive = get_smbfs_drive(drive);
-    if (drive < 0) {
+    int res = get_smbfs_drive(drive);
+    if (res < 0) {
+      printf("SMBFSが常駐していません\n");
+      exit(1);
+    } else if (res == 0) {
+      printf("ドライブ %c: はSMBFSではありません\n", 'A' + drive - 1);
       exit(1);
     }
     _dos_ioctrlfdctl(drive, SMBCMD_UNMOUNT, NULL);
     printf("ドライブ %c: のSMBFSをマウント解除しました\n", 'A' + drive - 1);
-
     exit(0);
   }
 
@@ -308,10 +309,15 @@ int main(int argc, char **argv)
     convert_path_separator(argv[url_index]);
     char *normalized_url = normalize_smb_url(argv[url_index]);
 
-    drive = get_smbfs_drive(drive);
-    if (drive < 0) {
+    int res = get_smbfs_drive(drive);
+    if (res < 0) {
+      printf("SMBFSが常駐していません\n");
+      exit(1);
+    } else if (res == 0) {
+      printf("ドライブ %c: はSMBFSではありません\n", 'A' + drive - 1);
       exit(1);
     }
+    drive = res;
 
     char username_buf[64];
     username_buf[0] = '\0';
@@ -328,7 +334,6 @@ int main(int argc, char **argv)
     };
     mount_info.username_len = sizeof(username_buf);
 
-    int res;
     res  = _dos_ioctrlfdctl(drive, SMBCMD_MOUNT, (void *)&mount_info);
     if (res == -2) {
       printf("ユーザ名 %s のパスワードを入力: ", mount_info.username);
@@ -351,10 +356,13 @@ int main(int argc, char **argv)
   ////////////////////////////////////////////////////////////////////////////
   // マウント状態の表示
 
-  {
-    drive = get_smbfs_drive(0);
-    if (drive < 0) {
+  for (drive = 1; drive <= 26; drive++) {
+    int res = get_smbfs_drive(drive);
+    if (res < 0) {
+      printf("SMBFSが常駐していません\n");
       exit(1);
+    } else if (res == 0) {
+      continue;
     }
 
     char server[64];
@@ -373,7 +381,7 @@ int main(int argc, char **argv)
       .username = username,
     };
 
-    int res = _dos_ioctrlfdctl(drive, SMBCMD_GETMOUNT, (void *)&getmount_info);
+    res = _dos_ioctrlfdctl(drive, SMBCMD_GETMOUNT, (void *)&getmount_info);
 
     printf("%c: ", 'A' + drive - 1);
     if (res < 0) {
