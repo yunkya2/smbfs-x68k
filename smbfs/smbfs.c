@@ -1237,13 +1237,13 @@ int op_ioctl(struct dos_req_header *req)
 
       if (rootsmb2[unit] != NULL) {
         DPRINTF1(" already mounted\r\n");
-        return -1;
+        return -EEXIST;
       }
 
       struct smb2_context *smb2 =smb2_init_context();
       if (smb2 == NULL) {
         DPRINTF1("  -> NOMEM\r\n");
-        return -1;
+        return -ENOMEM;
       }
 
       // NTLM_USER_FILEを参照するため、smbmount実行時に設定された環境変数を引き継ぐ
@@ -1253,7 +1253,7 @@ int op_ioctl(struct dos_req_header *req)
       if (url == NULL) {  // URL解析に失敗した
         environ = environ_none;
         smb2_destroy_context(smb2);
-        return -1;
+        return -EINVAL;
       }
 
       if (url->user) {                                  // URLにユーザ名が含まれている
@@ -1280,7 +1280,7 @@ int op_ioctl(struct dos_req_header *req)
         smb2_destroy_url(url);
         smb2_destroy_context(smb2);
         DPRINTF1("  -> NOPASS\r\n");
-        return -2;
+        return -EAGAIN;
       }
 
       smb2_set_security_mode(smb2, SMB2_NEGOTIATE_SIGNING_ENABLED);
@@ -1289,7 +1289,7 @@ int op_ioctl(struct dos_req_header *req)
         DPRINTF1("smb2_connect_share failed. %s\r\n", smb2_get_error(smb2));
         smb2_destroy_url(url);
         smb2_destroy_context(smb2);
-        return -1;
+        return -EIO;
       }
 
       DPRINTF1("smb2_connect_share succeeded.\r\n");
@@ -1300,7 +1300,7 @@ int op_ioctl(struct dos_req_header *req)
         smb2_destroy_url(url);
         smb2_destroy_context(smb2);
         DPRINTF1("  -> NOMEM\r\n");
-        return -1;
+        return -ENOMEM;
       }
       if (url->path && url->path[0] != '\0') {
         strcpy(rootpath_buf, url->path);
@@ -1308,9 +1308,10 @@ int op_ioctl(struct dos_req_header *req)
         rootpath_buf[0] = '\0';
       }
 
+      smb2_destroy_url(url);
       rootsmb2[unit] = smb2;
       rootpath[unit] = rootpath_buf;
-      DPRINTF1("rootsmb2[%d]=%p rootpath=%s\r\n", unit, rootsmb2[unit], rootpath[unit]);
+      DPRINTF1("rootsmb2[%d]=%p rootpath='%s'\r\n", unit, rootsmb2[unit], rootpath[unit]);
     }
     return 0;
 
@@ -1318,7 +1319,7 @@ int op_ioctl(struct dos_req_header *req)
     DPRINTF1(" UNMOUNT\r\n");
     if (rootsmb2[unit] == NULL) {
       DPRINTF1(" not mounted\r\n");
-      return -1;
+      return -ENOENT;
     }
 
     fi_freeall(0);
@@ -1337,7 +1338,7 @@ int op_ioctl(struct dos_req_header *req)
     DPRINTF1(" GETMOUNT\r\n");
     if (rootsmb2[unit] == NULL) {
       DPRINTF1(" not mounted\r\n");
-      return -1;
+      return -ENOENT;
     }
 
     struct smbcmd_getmount *mnt = (struct smbcmd_getmount *)req->addr;
@@ -1365,7 +1366,7 @@ int op_ioctl(struct dos_req_header *req)
     return 0;
 
   default:
-    return -1;
+    return -EINVAL;
   }
 }
 

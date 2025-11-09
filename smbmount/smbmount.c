@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <errno.h>
 #include <x68k/dos.h>
 #include <x68k/iocs.h>
 
@@ -281,7 +282,7 @@ int main(int argc, char **argv)
     if (drive == 0) {
       // 全ドライブのSMBFSをアンマウント
       for (drive = 1; drive <= 26; drive++) {
-        if (_dos_ioctrlfdctl(drive, SMBCMD_GETNAME, NULL) == 0) {
+        if (get_smbfs_drive(drive) > 0) {
           _dos_ioctrlfdctl(drive, SMBCMD_UNMOUNT, NULL);
         }
       }
@@ -289,7 +290,8 @@ int main(int argc, char **argv)
       exit(0);
     }
 
-    int res = get_smbfs_drive(drive);
+    int res;
+    res = get_smbfs_drive(drive);
     if (res < 0) {
       printf("SMBFSが常駐していません\n");
       exit(1);
@@ -297,7 +299,13 @@ int main(int argc, char **argv)
       printf("ドライブ %c: はSMBFSではありません\n", 'A' + drive - 1);
       exit(1);
     }
-    _dos_ioctrlfdctl(drive, SMBCMD_UNMOUNT, NULL);
+
+    res = _dos_ioctrlfdctl(drive, SMBCMD_UNMOUNT, NULL);
+    if (res < 0) {
+      printf("ドライブ %c: にはSMBFSがマウントされていません\n", 'A' + drive - 1);
+      exit(1);
+    }
+
     printf("ドライブ %c: のSMBFSをマウント解除しました\n", 'A' + drive - 1);
     exit(0);
   }
@@ -335,7 +343,7 @@ int main(int argc, char **argv)
     mount_info.username_len = sizeof(username_buf);
 
     res  = _dos_ioctrlfdctl(drive, SMBCMD_MOUNT, (void *)&mount_info);
-    if (res == -2) {
+    if (res == -EAGAIN) {
       printf("ユーザ名 %s のパスワードを入力: ", mount_info.username);
       char *password = getpass("");
       if (password == NULL) {
@@ -346,29 +354,77 @@ int main(int argc, char **argv)
     }
 
     if (res < 0) {
-      printf("ドライブ %c: のSMBFSマウントに失敗しました (エラーコード: %d)\n", 'A' + drive - 1, res);
+      printf("ドライブ %c: のSMBFSマウントに失敗しました ", 'A' + drive - 1);
+      switch (res) {
+      case -EEXIST:
+        printf("(既にマウントされています)\n");
+        break;
+      case -EINVAL:
+        printf("(URL指定に誤りがあります)\n");
+        break;
+      case -EIO:
+        printf("(指定されたサーバが見つからないか、共有に接続できません)\n");
+        break;
+      default:
+        printf("(エラーコード: %d)\n", res);
+        break;
+      }
       exit(1);
     }
 
+    printf("ドライブ %c: にSMBFSをマウントしました\n", 'A' + drive - 1);
     return 0;
   }
 
   ////////////////////////////////////////////////////////////////////////////
   // マウント状態の表示
 
-  for (drive = 1; drive <= 26; drive++) {
-    int res = get_smbfs_drive(drive);
-    if (res < 0) {
-      printf("SMBFSが常駐していません\n");
-      exit(1);
-    } else if (res == 0) {
-      continue;
-    }
-
+  {
     char server[64];
     char share[64];
     char rootpath[PATH_LEN];
     char username[64];
+
+    if (drive == 0) {
+      // 全ドライブのマウント状態を表示
+      for (drive = 1; drive <= 26; drive++) {
+        struct smbcmd_getmount getmount_info ={
+          .server_len = sizeof(server),
+          .share_len = sizeof(share),
+          .rootpath_len = sizeof(rootpath),
+          .username_len = sizeof(username),
+          .server = server,
+          .share = share,
+          .rootpath = rootpath,
+          .username = username,
+        };
+
+        if (get_smbfs_drive(drive) > 0) {
+          int res = _dos_ioctrlfdctl(drive, SMBCMD_GETMOUNT, (void *)&getmount_info);
+          printf("%c: ", 'A' + drive - 1);
+          if (res < 0) {
+            printf("--\n");
+          } else {
+            printf("//%s@%s/%s/%s\n",
+                 getmount_info.username,
+                 getmount_info.server,
+                 getmount_info.share,
+                 getmount_info.rootpath);
+          }
+        }
+      }
+      exit(0);
+    }
+
+    int res;
+    res = get_smbfs_drive(drive);
+    if (res < 0) {
+      printf("SMBFSが常駐していません\n");
+      exit(1);
+    } else if (res == 0) {
+      printf("ドライブ %c: はSMBFSではありません\n", 'A' + drive - 1);
+      exit(1);
+    }
 
     struct smbcmd_getmount getmount_info ={
       .server_len = sizeof(server),
@@ -382,7 +438,6 @@ int main(int argc, char **argv)
     };
 
     res = _dos_ioctrlfdctl(drive, SMBCMD_GETMOUNT, (void *)&getmount_info);
-
     printf("%c: ", 'A' + drive - 1);
     if (res < 0) {
       printf("--\n");
@@ -393,6 +448,7 @@ int main(int argc, char **argv)
              getmount_info.share,
              getmount_info.rootpath);
     }
+    exit(0);
   }
 
   return 0;
