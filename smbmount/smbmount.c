@@ -281,10 +281,18 @@ int main(int argc, char **argv)
 
     if (drive == 0) {
       // 全ドライブのSMBFSをアンマウント
-      for (drive = 1; drive <= 26; drive++) {
-        if (get_smbfs_drive(drive) > 0) {
-          _dos_ioctrlfdctl(drive, SMBCMD_UNMOUNT, NULL);
-        }
+      int res;
+      res = get_smbfs_drive(0);
+      if (res < 0) {
+        printf("SMBFSが常駐していません\n");
+        exit(1);
+      }
+      drive = res;
+
+      res = _dos_ioctrlfdctl(drive, SMBCMD_UNMOUNTALL, NULL);
+      if (res < 0) {
+        printf("SMBFSに使用中のファイルがあります\n");
+        exit(1);
       }
       printf("全ドライブのSMBFSをマウント解除しました\n");
       exit(0);
@@ -302,7 +310,14 @@ int main(int argc, char **argv)
 
     res = _dos_ioctrlfdctl(drive, SMBCMD_UNMOUNT, NULL);
     if (res < 0) {
-      printf("ドライブ %c: にはSMBFSがマウントされていません\n", 'A' + drive - 1);
+      switch (res) {
+      case -EBUSY:
+        printf("ドライブ %c: に使用中のファイルがあります\n", 'A' + drive - 1);
+        break;
+      default:
+        printf("ドライブ %c: にはSMBFSがマウントされていません\n", 'A' + drive - 1);
+        break;
+      }
       exit(1);
     }
 

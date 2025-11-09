@@ -34,7 +34,8 @@
 #define SMBCMD_NOP          0
 #define SMBCMD_MOUNT        1
 #define SMBCMD_UNMOUNT      2
-#define SMBCMD_GETMOUNT     3
+#define SMBCMD_UNMOUNTALL   3
+#define SMBCMD_GETMOUNT     4
 #define SMBCMD_SHAREENUM    5
 #define SMBCMD_GETTIME      10
 

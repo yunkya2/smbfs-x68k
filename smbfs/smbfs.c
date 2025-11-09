@@ -58,12 +58,23 @@
 
 typedef char hostpath_t[256];
 
+struct smbfs_data {
+  struct dos_devheader *devheader;
+  struct dos_dpb *dpbs;
+  int units;
+  int freeable;
+};
+
 //****************************************************************************
 // Global variables
 //****************************************************************************
 
 extern struct dos_devheader devheader;  // Human68kのデバイスヘッダ
 struct dos_req_header *reqheader;       // Human68kからのリクエストヘッダ
+
+struct smbfs_data smbfs_data = {
+  .devheader = &devheader
+};
 
 char *rootpath[MAXUNIT];                // 各ユニットのホストパス
 struct smb2_context *rootsmb2[MAXUNIT]; // 各ユニットのsmb2_context
@@ -285,6 +296,27 @@ static struct dos_devheader *find_devheader(struct dos_devheader *next)
     devh = devh->next;
   }
   return NULL;
+}
+
+//----------------------------------------------------------------------------
+
+// DPBがオープンされているファイルに使われていないか確認する
+static int check_dpb_busy(struct dos_dpb *dpb)
+{
+  int fd = 0;
+  // 全ファイルハンドルのDPBアドレスが dpb と一致するか確認する
+  while (1) {
+    union dos_fcb *fcb = _dos_get_fcb_adr(fd++);
+    if ((int)fcb == _DOSE_BADF) {
+      continue;   // ファイルハンドルはオープンされていない
+    } else if ((int)fcb < 0) {
+      break;      // 全ファイルハンドルを確認した
+    }
+    if (fcb->blk.deventry == dpb) {
+      return -1;  // このDPBはオープンされているファイルに使われている
+    }
+  }
+  return 0;
 }
 
 //----------------------------------------------------------------------------
@@ -1214,178 +1246,6 @@ int op_diskwrt(struct dos_req_header *req)
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-int op_ioctl(struct dos_req_header *req)
-{
-  int unit = req->unit;
-  int func = (int)req->status >> 16;
-  DPRINTF1("IOCTL: cmd=%d buf=%p\r\n", func, req->addr);
-
-  switch (func) {
-  case SMBCMD_GETNAME:
-    memcpy(req->addr, SMBFS_SIGNATURE, 8);
-    return 0;
-  case SMBCMD_NOP:
-    return 0;
-
-  case SMBCMD_MOUNT:
-    {
-      struct smbcmd_mount *mnt = (struct smbcmd_mount *)req->addr;
-
-      DPRINTF1(" MOUNT url=%s user=%s pass=%s\r\n",
-               mnt->url, mnt->username, mnt->password);
-
-
-      if (rootsmb2[unit] != NULL) {
-        DPRINTF1(" already mounted\r\n");
-        return -EEXIST;
-      }
-
-      struct smb2_context *smb2 =smb2_init_context();
-      if (smb2 == NULL) {
-        DPRINTF1("  -> NOMEM\r\n");
-        return -ENOMEM;
-      }
-
-      // NTLM_USER_FILEを参照するため、smbmount実行時に設定された環境変数を引き継ぐ
-      environ = mnt->environ;
-
-      struct smb2_url *url = smb2_parse_url(smb2, mnt->url);
-      if (url == NULL) {  // URL解析に失敗した
-        environ = environ_none;
-        smb2_destroy_context(smb2);
-        return -EINVAL;
-      }
-
-      if (url->user) {                                  // URLにユーザ名が含まれている
-        smb2_set_user(smb2, url->user);
-      }
-      if (mnt->username && mnt->username[0] != '\0') {  // マウント時にユーザ名が指定されている
-        smb2_set_user(smb2, mnt->username);
-      }
-      if (mnt->password) {                              // マウント時にパスワードが指定されている
-        smb2_set_password(smb2, mnt->password);
-      }
-
-      DPRINTF1("server=%s share=%s path=%s user=%s\r\n",
-               url->server, url->share, url->path, smb2_get_user(smb2));
-
-      // 環境変数を元に戻す
-      environ = environ_none;
-
-      // NTLM_USER_FILEにパスワードがなく、マウント時のパスワード指定もない場合はユーザに問い合わせる
-      if (smb2->password == NULL) {
-        strncpy(mnt->username, smb2->user, mnt->username_len);
-        mnt->username[mnt->username_len - 1] = '\0';
-        mnt->username_len = strlen(smb2->user) + 1;
-        smb2_destroy_url(url);
-        smb2_destroy_context(smb2);
-        DPRINTF1("  -> NOPASS\r\n");
-        return -EAGAIN;
-      }
-
-      // サーバに接続する
-      smb2_set_security_mode(smb2, SMB2_NEGOTIATE_SIGNING_ENABLED);
-      DPRINTF1("smb2_connect_share\r\n");
-      if (smb2_connect_share(smb2, url->server, url->share, NULL) < 0) {
-        DPRINTF1("smb2_connect_share failed. %s\r\n", smb2_get_error(smb2));
-        smb2_destroy_url(url);
-        smb2_destroy_context(smb2);
-        return -EIO;
-      }
-      rootsmb2[unit] = smb2;
-      DPRINTF1("smb2_connect_share succeeded.\r\n");
-
-      // マウントするパス名が存在するか確認する
-      if (url->path && url->path[0] != '\0') {
-        TYPE_STAT st;
-        if (FUNC_STAT(req->unit, NULL, url->path, &st) != 0 || !STAT_ISDIR(&st)) {
-          smb2_disconnect_share(smb2);
-          smb2_destroy_url(url);
-          smb2_destroy_context(smb2);
-          rootsmb2[unit] = NULL;
-          DPRINTF1("  -> NOTDIR\r\n");
-          return -ENOTDIR;
-        }
-      }
-
-      char *rootpath_buf = malloc(url->path ? strlen(url->path) + 1 : 1);
-      if (rootpath_buf == NULL) {
-        smb2_disconnect_share(smb2);
-        smb2_destroy_url(url);
-        smb2_destroy_context(smb2);
-        rootsmb2[unit] = NULL;
-        DPRINTF1("  -> NOMEM\r\n");
-        return -ENOMEM;
-      }
-      if (url->path && url->path[0] != '\0') {
-        strcpy(rootpath_buf, url->path);
-      } else {
-        rootpath_buf[0] = '\0';
-      }
-
-      smb2_destroy_url(url);
-      rootpath[unit] = rootpath_buf;
-      DPRINTF1("rootsmb2[%d]=%p rootpath='%s'\r\n", unit, rootsmb2[unit], rootpath[unit]);
-    }
-    return 0;
-
-  case SMBCMD_UNMOUNT:
-    DPRINTF1(" UNMOUNT\r\n");
-    if (rootsmb2[unit] == NULL) {
-      DPRINTF1(" not mounted\r\n");
-      return -ENOENT;
-    }
-
-    fi_freeall(0);
-    dl_freeall(0);
-
-    smb2_disconnect_share(rootsmb2[unit]);
-    smb2_destroy_context(rootsmb2[unit]);
-    rootsmb2[unit] = NULL;
-    free(rootpath[unit]);
-    rootpath[unit] = NULL;
-
-    DPRINTF1(" unmounted\r\n");
-    return 0;
-
-  case SMBCMD_GETMOUNT:
-    DPRINTF1(" GETMOUNT\r\n");
-    if (rootsmb2[unit] == NULL) {
-      DPRINTF1(" not mounted\r\n");
-      return -ENOENT;
-    }
-
-    struct smbcmd_getmount *mnt = (struct smbcmd_getmount *)req->addr;
-
-    strncpy(mnt->server, rootsmb2[unit]->server, mnt->server_len);
-    mnt->server[mnt->server_len - 1] = '\0';
-    mnt->server_len = strlen(rootsmb2[unit]->server) + 1;
-
-    strncpy(mnt->share, rootsmb2[unit]->share, mnt->share_len);
-    mnt->share[mnt->share_len - 1] = '\0';
-    mnt->share_len = strlen(rootsmb2[unit]->share) + 1;
-
-    strncpy(mnt->rootpath, rootpath[unit], mnt->rootpath_len);
-    mnt->rootpath[mnt->rootpath_len - 1] = '\0';
-    mnt->rootpath_len = strlen(rootpath[unit]) + 1;
-
-    strncpy(mnt->username, rootsmb2[unit]->user, mnt->username_len);
-    mnt->username[mnt->username_len - 1] = '\0';
-    mnt->username_len = strlen(rootsmb2[unit]->user) + 1;
-
-    return 0;
-
-  case SMBCMD_GETTIME:
-    DPRINTF1(" GETTIME\r\n");
-    return 0;
-
-  default:
-    return -EINVAL;
-  }
-}
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
 int op_abort(struct dos_req_header *req)
 {
   DPRINTF1("ABORT:\r\n");
@@ -1406,6 +1266,225 @@ int op_lock(struct dos_req_header *req)
 {
   DPRINTF1("LOCK:\r\n");
   return 0;
+}
+
+//****************************************************************************
+// IOCTRL operations
+//****************************************************************************
+
+static int op_do_mount(int unit, struct smbcmd_mount *mnt)
+{
+  DPRINTF1(" MOUNT url=%s user=%s pass=%s\r\n",
+           mnt->url, mnt->username, mnt->password);
+
+  if (rootsmb2[unit] != NULL) {
+    DPRINTF1(" already mounted\r\n");
+    return -EEXIST;
+  }
+
+  struct smb2_context *smb2 =smb2_init_context();
+  if (smb2 == NULL) {
+    DPRINTF1("  -> NOMEM\r\n");
+    return -ENOMEM;
+  }
+
+  // NTLM_USER_FILEを参照するため、smbmount実行時に設定された環境変数を引き継ぐ
+  environ = mnt->environ;
+
+  struct smb2_url *url = smb2_parse_url(smb2, mnt->url);
+  if (url == NULL) {  // URL解析に失敗した
+    environ = environ_none;
+    smb2_destroy_context(smb2);
+    return -EINVAL;
+  }
+
+  if (url->user) {                                  // URLにユーザ名が含まれている
+    smb2_set_user(smb2, url->user);
+  }
+  if (mnt->username && mnt->username[0] != '\0') {  // マウント時にユーザ名が指定されている
+    smb2_set_user(smb2, mnt->username);
+  }
+  if (mnt->password) {                              // マウント時にパスワードが指定されている
+    smb2_set_password(smb2, mnt->password);
+  }
+
+  DPRINTF1("server=%s share=%s path=%s user=%s\r\n",
+           url->server, url->share, url->path, smb2_get_user(smb2));
+
+  // 環境変数を元に戻す
+  environ = environ_none;
+
+  // NTLM_USER_FILEにパスワードがなく、マウント時のパスワード指定もない場合はユーザに問い合わせる
+  if (smb2->password == NULL) {
+    strncpy(mnt->username, smb2->user, mnt->username_len);
+    mnt->username[mnt->username_len - 1] = '\0';
+    mnt->username_len = strlen(smb2->user) + 1;
+    smb2_destroy_url(url);
+    smb2_destroy_context(smb2);
+    DPRINTF1("  -> NOPASS\r\n");
+    return -EAGAIN;
+  }
+
+  // サーバに接続する
+  smb2_set_security_mode(smb2, SMB2_NEGOTIATE_SIGNING_ENABLED);
+  DPRINTF1("smb2_connect_share\r\n");
+  if (smb2_connect_share(smb2, url->server, url->share, NULL) < 0) {
+    DPRINTF1("smb2_connect_share failed. %s\r\n", smb2_get_error(smb2));
+    smb2_destroy_url(url);
+    smb2_destroy_context(smb2);
+    return -EIO;
+  }
+  rootsmb2[unit] = smb2;
+  DPRINTF1("smb2_connect_share succeeded.\r\n");
+
+  // マウントするパス名が存在するか確認する
+  if (url->path && url->path[0] != '\0') {
+    TYPE_STAT st;
+    if (FUNC_STAT(unit, NULL, url->path, &st) != 0 || !STAT_ISDIR(&st)) {
+      smb2_disconnect_share(smb2);
+      smb2_destroy_url(url);
+      smb2_destroy_context(smb2);
+      rootsmb2[unit] = NULL;
+      DPRINTF1("  -> NOTDIR\r\n");
+      return -ENOTDIR;
+    }
+  }
+
+  // ルートパス名を保存する
+  char *rootpath_buf = malloc(url->path ? strlen(url->path) + 1 : 1);
+  if (rootpath_buf == NULL) {
+    smb2_disconnect_share(smb2);
+    smb2_destroy_url(url);
+    smb2_destroy_context(smb2);
+    rootsmb2[unit] = NULL;
+    DPRINTF1("  -> NOMEM\r\n");
+    return -ENOMEM;
+  }
+  if (url->path && url->path[0] != '\0') {
+    strcpy(rootpath_buf, url->path);
+  } else {
+    rootpath_buf[0] = '\0';
+  }
+
+  smb2_destroy_url(url);
+  rootpath[unit] = rootpath_buf;
+  DPRINTF1("rootsmb2[%d]=%p rootpath='%s'\r\n", unit, rootsmb2[unit], rootpath[unit]);
+
+  return 0;
+}
+
+static int op_do_unmount(int unit)
+{
+  DPRINTF1(" UNMOUNT\r\n");
+  if (rootsmb2[unit] == NULL) {
+    DPRINTF1(" not mounted\r\n");
+    return -ENOENT;
+  }
+
+  if (check_dpb_busy(&smbfs_data.dpbs[unit])) {
+    DPRINTF1(" busy\r\n");
+    return -EBUSY;
+  }
+
+  fi_freeall(unit);
+  dl_freeall(unit);
+  smb2_disconnect_share(rootsmb2[unit]);
+  smb2_destroy_context(rootsmb2[unit]);
+  rootsmb2[unit] = NULL;
+  free(rootpath[unit]);
+  rootpath[unit] = NULL;
+
+  DPRINTF1(" unmounted\r\n");
+  return 0;
+}
+
+static int op_do_unmountall(void)
+{
+  DPRINTF1(" UNMOUNTALL\r\n");
+
+  // 使用中のマウントがあるか確認する
+  for (int unit = 0; unit < MAXUNIT; unit++) {
+    if (rootsmb2[unit] == NULL) {
+      continue;
+    }
+    if (check_dpb_busy(&smbfs_data.dpbs[unit])) {
+      DPRINTF1(" busy\r\n");
+      return -EBUSY;
+    }
+  }
+
+  for (int unit = 0; unit < MAXUNIT; unit++) {
+    if (rootsmb2[unit] == NULL) {
+      continue;
+    }
+
+    fi_freeall(unit);
+    dl_freeall(unit);
+    smb2_disconnect_share(rootsmb2[unit]);
+    smb2_destroy_context(rootsmb2[unit]);
+    rootsmb2[unit] = NULL;
+    free(rootpath[unit]);
+    rootpath[unit] = NULL;
+  }
+
+  DPRINTF1(" unmounted\r\n");
+  return 0;
+}
+
+static int op_do_getmount(int unit, struct smbcmd_getmount *mnt)
+{
+  DPRINTF1(" GETMOUNT\r\n");
+  if (rootsmb2[unit] == NULL) {
+    DPRINTF1(" not mounted\r\n");
+    return -ENOENT;
+  }
+
+  strncpy(mnt->server, rootsmb2[unit]->server, mnt->server_len);
+  mnt->server[mnt->server_len - 1] = '\0';
+  mnt->server_len = strlen(rootsmb2[unit]->server) + 1;
+  strncpy(mnt->share, rootsmb2[unit]->share, mnt->share_len);
+  mnt->share[mnt->share_len - 1] = '\0';
+  mnt->share_len = strlen(rootsmb2[unit]->share) + 1;
+  strncpy(mnt->rootpath, rootpath[unit], mnt->rootpath_len);
+  mnt->rootpath[mnt->rootpath_len - 1] = '\0';
+  mnt->rootpath_len = strlen(rootpath[unit]) + 1;
+  strncpy(mnt->username, rootsmb2[unit]->user, mnt->username_len);
+  mnt->username[mnt->username_len - 1] = '\0';
+  mnt->username_len = strlen(rootsmb2[unit]->user) + 1;
+
+  return 0;
+}
+
+  /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+int op_ioctl(struct dos_req_header *req)
+{
+  int unit = req->unit;
+  int func = (int)req->status >> 16;
+  DPRINTF1("IOCTL: cmd=%d buf=%p\r\n", func, req->addr);
+
+  switch (func) {
+  case SMBCMD_GETNAME:
+    memcpy(req->addr, SMBFS_SIGNATURE, 8);
+    return 0;
+  case SMBCMD_NOP:
+    return 0;
+  case SMBCMD_MOUNT:
+    return op_do_mount(unit, (struct smbcmd_mount *)req->addr);
+  case SMBCMD_UNMOUNT:
+    return op_do_unmount(unit);
+  case SMBCMD_UNMOUNTALL:
+    return op_do_unmountall();
+  case SMBCMD_GETMOUNT:
+    return op_do_getmount(unit, (struct smbcmd_getmount *)req->addr);
+
+  case SMBCMD_GETTIME:
+    DPRINTF1(" GETTIME\r\n");
+    return 0;
+
+  default:
+    return -EINVAL;
+  }
 }
 
 //****************************************************************************
@@ -1531,15 +1610,6 @@ int interrupt(void)
 // Program entry
 //****************************************************************************
 
-struct smbfs_data {
-  struct dos_devheader *devheader;
-  struct dos_dpb *dpbs;
-  int units;
-  int freeable;
-} smbfs_data = {
-  .devheader = &devheader
-};
-
 struct dos_comline *cmdline;
 char *memblock;
 extern char _end;
@@ -1609,7 +1679,8 @@ void _start()
     struct smbfs_data *r_smbfs_data = NULL;
 
     // Human68kのカレントディレクトリテーブルからsmbfsの常駐状況を確認する
-    for (int drv = 0; drv < 26; drv++) {
+    int drv;
+    for (drv = 0; drv < 26; drv++) {
       struct dos_curdir *curdir = &curdir_table[drvxtbl[drv]];
       if (curdir->type == 0x40) {
         struct dos_dpb *dpb = curdir->dpb;
@@ -1627,6 +1698,10 @@ void _start()
     }
     if (!r_smbfs_data->freeable) {
       printf("SMBFSはCONFIG.SYSで常駐しているため常駐解除できません\n");
+      _dos_exit();
+    }
+    if (_dos_ioctrlfdctl(drv + 1, SMBCMD_UNMOUNTALL, NULL) < 0) {
+      printf("使用中のマウントがあるため常駐解除できません\n");
       _dos_exit();
     }
 
