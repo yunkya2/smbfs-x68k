@@ -83,8 +83,6 @@ struct smb2_context *rootsmb2[MAXUNIT]; // 各ユニットのsmb2_context
 int debuglevel = 1;
 #endif
 
-uint32_t _vernum;
-
 char ** const environ_none = { NULL };
 char **environ;
 
@@ -1506,8 +1504,6 @@ int interrupt(void)
   switch (req->command) {
   case 0x40: /* init */
   {
-    _vernum = _dos_vernum();
-
     req->command = 0; /* for Human68k bug workaround */
     int r = com_init(req);
     if (r >= 0) {
