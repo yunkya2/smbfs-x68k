@@ -224,7 +224,7 @@ static void usage(void)
     "    -U <username[%password]>   - 接続時のユーザ名とパスワードを指定\n"
     "    -D                         - マウントを解除\n\n"
     "URL フォーマット:\n"
-    "    [smb://][<domain>;][<username>@]<host>[:<port>][/<share>]\n\n"
+    "    [smb://][<domain>;][<username>@]<host>[:<port>]/<share>[/<path>]\n\n"
     "環境変数 NTLM_USER_FILE で指定したファイルがユーザ情報に使用されます\n"
   );
 }
@@ -361,6 +361,9 @@ int main(int argc, char **argv)
         break;
       case -EINVAL:
         printf("(URL指定に誤りがあります)\n");
+        break;
+      case -ENOTDIR:
+        printf("(マウントするパス名が存在しません)\n");
         break;
       case -EIO:
         printf("(指定されたサーバが見つからないか、共有に接続できません)\n");

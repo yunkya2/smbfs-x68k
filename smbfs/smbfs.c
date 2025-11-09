@@ -1283,6 +1283,7 @@ int op_ioctl(struct dos_req_header *req)
         return -EAGAIN;
       }
 
+      // サーバに接続する
       smb2_set_security_mode(smb2, SMB2_NEGOTIATE_SIGNING_ENABLED);
       DPRINTF1("smb2_connect_share\r\n");
       if (smb2_connect_share(smb2, url->server, url->share, NULL) < 0) {
@@ -1291,14 +1292,28 @@ int op_ioctl(struct dos_req_header *req)
         smb2_destroy_context(smb2);
         return -EIO;
       }
-
+      rootsmb2[unit] = smb2;
       DPRINTF1("smb2_connect_share succeeded.\r\n");
+
+      // マウントするパス名が存在するか確認する
+      if (url->path && url->path[0] != '\0') {
+        TYPE_STAT st;
+        if (FUNC_STAT(req->unit, NULL, url->path, &st) != 0 || !STAT_ISDIR(&st)) {
+          smb2_disconnect_share(smb2);
+          smb2_destroy_url(url);
+          smb2_destroy_context(smb2);
+          rootsmb2[unit] = NULL;
+          DPRINTF1("  -> NOTDIR\r\n");
+          return -ENOTDIR;
+        }
+      }
 
       char *rootpath_buf = malloc(url->path ? strlen(url->path) + 1 : 1);
       if (rootpath_buf == NULL) {
         smb2_disconnect_share(smb2);
         smb2_destroy_url(url);
         smb2_destroy_context(smb2);
+        rootsmb2[unit] = NULL;
         DPRINTF1("  -> NOMEM\r\n");
         return -ENOMEM;
       }
@@ -1309,7 +1324,6 @@ int op_ioctl(struct dos_req_header *req)
       }
 
       smb2_destroy_url(url);
-      rootsmb2[unit] = smb2;
       rootpath[unit] = rootpath_buf;
       DPRINTF1("rootsmb2[%d]=%p rootpath='%s'\r\n", unit, rootsmb2[unit], rootpath[unit]);
     }
