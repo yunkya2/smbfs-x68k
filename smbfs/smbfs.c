@@ -378,10 +378,16 @@ int com_init(struct dos_req_header *req)
 int op_chdir(struct dos_req_header *req)
 {
   hostpath_t path;
+  struct dos_namestbuf *ns = (struct dos_namestbuf *)req->addr;
 
   DNAMEPRINT(req->addr, false, "CHDIR: ");
 
-  if (conv_namebuf(req->unit, req->addr, false, &path) < 0) {
+  if (strcmp(ns->path, "\t") == 0) {
+    DPRINTF1("-> OK\r\n");
+    return 0;   // ルートディレクトリへの変更は常に成功とする
+  }
+
+  if (conv_namebuf(req->unit, ns, false, &path) < 0) {
     DPRINTF1("-> NODIR\r\n");
     return _DOSE_NODIR;
   }
@@ -1661,9 +1667,6 @@ void _start()
   if (release) {
     //////////////////////////////////////////////////////////////////////////
     // 常駐解除処理
-
-    // TODO: バッファフラッシュ
-    // TODO: ディレクトリ移動、subst設定時の対応
 
     struct dos_devheader *r_devheader = NULL;
     struct smbfs_data *r_smbfs_data = NULL;
