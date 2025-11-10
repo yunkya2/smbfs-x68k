@@ -1371,6 +1371,17 @@ static int op_do_mount(int unit, struct smbcmd_mount *mnt)
   return 0;
 }
 
+static void op_do_unmount_one(int unit)
+{
+  fi_freeall(unit);
+  dl_freeall(unit);
+  smb2_disconnect_share(rootsmb2[unit]);
+  smb2_destroy_context(rootsmb2[unit]);
+  rootsmb2[unit] = NULL;
+  free(rootpath[unit]);
+  rootpath[unit] = NULL;
+}
+
 static int op_do_unmount(int unit)
 {
   DPRINTF1(" UNMOUNT\r\n");
@@ -1384,13 +1395,7 @@ static int op_do_unmount(int unit)
     return -EBUSY;
   }
 
-  fi_freeall(unit);
-  dl_freeall(unit);
-  smb2_disconnect_share(rootsmb2[unit]);
-  smb2_destroy_context(rootsmb2[unit]);
-  rootsmb2[unit] = NULL;
-  free(rootpath[unit]);
-  rootpath[unit] = NULL;
+  op_do_unmount_one(unit);
 
   DPRINTF1(" unmounted\r\n");
   return 0;
@@ -1402,27 +1407,16 @@ static int op_do_unmountall(void)
 
   // 使用中のマウントがあるか確認する
   for (int unit = 0; unit < MAXUNIT; unit++) {
-    if (rootsmb2[unit] == NULL) {
-      continue;
-    }
-    if (check_dpb_busy(&smbfs_data.dpbs[unit])) {
+    if (rootsmb2[unit] != NULL && check_dpb_busy(&smbfs_data.dpbs[unit])) {
       DPRINTF1(" busy\r\n");
       return -EBUSY;
     }
   }
 
   for (int unit = 0; unit < MAXUNIT; unit++) {
-    if (rootsmb2[unit] == NULL) {
-      continue;
+    if (rootsmb2[unit] != NULL) {
+      op_do_unmount_one(unit);
     }
-
-    fi_freeall(unit);
-    dl_freeall(unit);
-    smb2_disconnect_share(rootsmb2[unit]);
-    smb2_destroy_context(rootsmb2[unit]);
-    rootsmb2[unit] = NULL;
-    free(rootpath[unit]);
-    rootpath[unit] = NULL;
   }
 
   DPRINTF1(" unmounted\r\n");
