@@ -33,6 +33,7 @@
 #include <setjmp.h>
 #include <errno.h>
 #include <sys/socket.h>
+#include <pthread.h>
 #include <x68k/dos.h>
 #include <x68k/iocs.h>
 
@@ -63,6 +64,8 @@ struct smbfs_data {
   struct dos_dpb *dpbs;
   int units;
   int freeable;
+  pthread_t keepalive_thread;
+  pthread_mutex_t keepalive_mutex;
 };
 
 //****************************************************************************
@@ -73,7 +76,8 @@ extern struct dos_devheader devheader;  // Human68kのデバイスヘッダ
 struct dos_req_header *reqheader;       // Human68kからのリクエストヘッダ
 
 struct smbfs_data smbfs_data = {
-  .devheader = &devheader
+  .devheader = &devheader,
+  .keepalive_mutex = PTHREAD_MUTEX_INITIALIZER
 };
 
 char *rootpath[MAXUNIT];                // 各ユニットのホストパス
@@ -129,6 +133,7 @@ void DNAMEPRINT(void *n, bool full, char *head)
 //****************************************************************************
 
 void __socket_register_at_exit(void) {}
+void __thread_register_at_exit(void) {}
 
 struct smb2_context *getsmb2(int unit)
 {
@@ -1485,6 +1490,27 @@ int op_ioctl(struct dos_req_header *req)
 }
 
 //****************************************************************************
+// Keepalive thread
+//****************************************************************************
+
+__attribute__((noreturn))
+static void *keepalive_thread_func(void *arg)
+{
+  pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+  int unit = 0;
+  while (1) {
+    sleep(30);
+    pthread_mutex_lock(&smbfs_data.keepalive_mutex);
+    DPRINTF1("Keepalive check unit=%d\r\n", unit);
+    if (rootsmb2[unit]) {
+      smb2_echo(rootsmb2[unit]);
+    }
+    unit = (unit + 1) % smbfs_data.units;
+    pthread_mutex_unlock(&smbfs_data.keepalive_mutex);
+  }
+}
+
+//****************************************************************************
 // Device driver interrupt rountine
 //****************************************************************************
 
@@ -1500,6 +1526,8 @@ int interrupt(void)
 
   DPRINTF2("----Command: 0x%02x\r\n", req->command);
 
+  pthread_mutex_lock(&smbfs_data.keepalive_mutex);
+
   switch (req->command) {
   case 0x40: /* init */
   {
@@ -1509,9 +1537,10 @@ int interrupt(void)
       req->attr = r; /* Number of units */
       extern char _end;
       req->addr = &_end;
-      return 0;
+      break;
     } else {
-      return -r;
+      err = -r;
+      break;
     }
     break;
   }
@@ -1597,6 +1626,8 @@ int interrupt(void)
     req->status = 0;
     err = 0x1003;  // 不正なコマンドコード
   }
+
+  pthread_mutex_unlock(&smbfs_data.keepalive_mutex);
 
   return err;
 }
@@ -1696,6 +1727,11 @@ void _start()
       _dos_exit();
     }
 
+    // Keepaliveスレッドを終了する
+    pthread_mutex_lock(&r_smbfs_data->keepalive_mutex);
+    pthread_cancel(r_smbfs_data->keepalive_thread);
+    pthread_join(r_smbfs_data->keepalive_thread, NULL);
+
     // デバイスドライバのリンクリストからsmbfsを外す
     struct dos_devheader *prev = find_devheader(r_devheader);
     if (prev != NULL) {
@@ -1760,6 +1796,16 @@ void _start()
     smbfs_data.dpbs = calloc(units, sizeof(struct dos_dpb));
     if (smbfs_data.dpbs == NULL) {
       printf("メモリ不足で常駐できません\n");
+      _dos_exit();
+    }
+
+    // Keepaliveスレッドを作成する
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setname_np(&attr, "smb_keepalive");
+    // TBD stack size
+    if (pthread_create(&smbfs_data.keepalive_thread, &attr, keepalive_thread_func, NULL) != 0) {
+      printf("Keepaliveスレッドを作成できません\n");
       _dos_exit();
     }
 
