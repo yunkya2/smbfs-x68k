@@ -87,7 +87,6 @@ char ** const environ_none = { NULL };
 char **environ;
 
 // TBD stack, heap
-uint16_t stack[32 * 1024];
 char heap[1024 * 512];                // temporary heap for debug print
 void *_HSTA = heap;
 void *_HEND = heap + sizeof(heap);
@@ -1614,7 +1613,6 @@ void _start()
 {
   __asm__ volatile ("move.l %%a0,%0" : "=m"(memblock));
   __asm__ volatile ("move.l %%a2,%0" : "=m"(cmdline));
-  __asm__ volatile ("move.l %0,%%sp" : : "a"(stack + 32 * 1024));
 
   environ = environ_none;
 
