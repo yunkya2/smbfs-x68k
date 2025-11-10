@@ -48,6 +48,7 @@
 
 #include "smbfs.h"
 #include "fileop.h"
+#include "iconv_mini.h"
 
 //****************************************************************************
 // Macros and definitions
@@ -55,9 +56,10 @@
 
 #define DEBUG
 
+#define PATH_LEN 256
 #define MAXUNIT   8
 
-typedef char hostpath_t[256];
+typedef char hostpath_t[PATH_LEN];
 
 struct smbfs_data {
   struct dos_devheader *devheader;
@@ -276,6 +278,52 @@ static int conv_errno(int err)
   default:
     return _DOSE_ILGPARM;
   }
+}
+
+//----------------------------------------------------------------------------
+
+// SJIS -> UTF-8 conversion
+static char* sjis_to_utf8(const char *sjis_str)
+{
+  static char buffer[PATH_LEN];
+
+  if (sjis_str == NULL) return NULL;
+
+  char *src_buf = (char *)sjis_str;  // Cast away const for iconv API
+  size_t src_len = strlen(sjis_str);
+  char *dst_buf = buffer;
+  size_t dst_len = sizeof(buffer) - 1; // Reserve space for null terminator
+
+  if (iconv_s2u(&src_buf, &src_len, &dst_buf, &dst_len) < 0) {
+    return NULL;
+  }
+  
+  // Add null terminator
+  *dst_buf = '\0';
+  
+  return buffer;
+}
+
+// UTF-8 -> SJIS conversion
+static char* utf8_to_sjis(const char *utf8_str)
+{
+  static char buffer[PATH_LEN];
+
+  if (utf8_str == NULL) return NULL;
+
+  char *src_buf = (char *)utf8_str;  // Cast away const for iconv API
+  size_t src_len = strlen(utf8_str);
+  char *dst_buf = buffer;
+  size_t dst_len = sizeof(buffer) - 1; // Reserve space for null terminator
+  
+  if (iconv_u2s(&src_buf, &src_len, &dst_buf, &dst_len) < 0) {
+    return NULL;
+  }
+  
+  // Add null terminator
+  *dst_buf = '\0';
+
+  return buffer;
 }
 
 //----------------------------------------------------------------------------
@@ -1282,6 +1330,9 @@ int op_lock(struct dos_req_header *req)
 
 static int op_do_mount(int unit, struct smbcmd_mount *mnt)
 {
+  int mnt_err = 0;
+  struct smb2_url *url = NULL;
+
   DPRINTF1(" MOUNT url=%s user=%s pass=%s\r\n",
            mnt->url, mnt->username, mnt->password);
 
@@ -1299,18 +1350,18 @@ static int op_do_mount(int unit, struct smbcmd_mount *mnt)
   // NTLM_USER_FILEを参照するため、smbmount実行時に設定された環境変数を引き継ぐ
   environ = mnt->environ;
 
-  struct smb2_url *url = smb2_parse_url(smb2, mnt->url);
-  if (url == NULL) {  // URL解析に失敗した
-    environ = environ_none;
-    smb2_destroy_context(smb2);
-    return -EINVAL;
+  // 与えられたURLをパースする(UTF-8に変換後)
+  if ((url = smb2_parse_url(smb2, sjis_to_utf8(mnt->url))) == NULL) {
+    DPRINTF1("  -> INVAL\r\n");
+    mnt_err = -EINVAL;
+    goto mnt_errout;
   }
 
   if (url->user) {                                  // URLにユーザ名が含まれている
     smb2_set_user(smb2, url->user);
   }
   if (mnt->username && mnt->username[0] != '\0') {  // マウント時にユーザ名が指定されている
-    smb2_set_user(smb2, mnt->username);
+    smb2_set_user(smb2, sjis_to_utf8(mnt->username));
   }
   if (mnt->password) {                              // マウント時にパスワードが指定されている
     smb2_set_password(smb2, mnt->password);
@@ -1324,13 +1375,13 @@ static int op_do_mount(int unit, struct smbcmd_mount *mnt)
 
   // NTLM_USER_FILEにパスワードがなく、マウント時のパスワード指定もない場合はユーザに問い合わせる
   if (smb2->password == NULL) {
+    // TBD:smb2->userはUTF-8なので、必要に応じて変換する
     strncpy(mnt->username, smb2->user, mnt->username_len);
     mnt->username[mnt->username_len - 1] = '\0';
     mnt->username_len = strlen(smb2->user) + 1;
-    smb2_destroy_url(url);
-    smb2_destroy_context(smb2);
     DPRINTF1("  -> NOPASS\r\n");
-    return -EAGAIN;
+    mnt_err = -EAGAIN;
+    goto mnt_errout;
   }
 
   // サーバに接続する
@@ -1338,9 +1389,8 @@ static int op_do_mount(int unit, struct smbcmd_mount *mnt)
   DPRINTF1("smb2_connect_share\r\n");
   if (smb2_connect_share(smb2, url->server, url->share, NULL) < 0) {
     DPRINTF1("smb2_connect_share failed. %s\r\n", smb2_get_error(smb2));
-    smb2_destroy_url(url);
-    smb2_destroy_context(smb2);
-    return -EIO;
+    mnt_err = -EIO;
+    goto mnt_errout;
   }
   rootsmb2[unit] = smb2;
   DPRINTF1("smb2_connect_share succeeded.\r\n");
@@ -1349,24 +1399,18 @@ static int op_do_mount(int unit, struct smbcmd_mount *mnt)
   if (url->path && url->path[0] != '\0') {
     TYPE_STAT st;
     if (FUNC_STAT(unit, NULL, url->path, &st) != 0 || !STAT_ISDIR(&st)) {
-      smb2_disconnect_share(smb2);
-      smb2_destroy_url(url);
-      smb2_destroy_context(smb2);
-      rootsmb2[unit] = NULL;
       DPRINTF1("  -> NOTDIR\r\n");
-      return -ENOTDIR;
+      mnt_err = -ENOTDIR;
+      goto mnt_errout;
     }
   }
 
   // ルートパス名を保存する
   char *rootpath_buf = malloc(url->path ? strlen(url->path) + 1 : 1);
   if (rootpath_buf == NULL) {
-    smb2_disconnect_share(smb2);
-    smb2_destroy_url(url);
-    smb2_destroy_context(smb2);
-    rootsmb2[unit] = NULL;
     DPRINTF1("  -> NOMEM\r\n");
-    return -ENOMEM;
+    mnt_err = -ENOMEM;
+    goto mnt_errout;
   }
   if (url->path && url->path[0] != '\0') {
     strcpy(rootpath_buf, url->path);
@@ -1377,8 +1421,17 @@ static int op_do_mount(int unit, struct smbcmd_mount *mnt)
   smb2_destroy_url(url);
   rootpath[unit] = rootpath_buf;
   DPRINTF1("rootsmb2[%d]=%p rootpath='%s'\r\n", unit, rootsmb2[unit], rootpath[unit]);
-
   return 0;
+
+mnt_errout:
+  environ = environ_none;
+  if (url) {
+    smb2_destroy_url(url);
+  }
+  smb2_disconnect_share(smb2);
+  smb2_destroy_context(smb2);
+  rootsmb2[unit] = NULL;
+  return mnt_err;
 }
 
 static void op_do_unmount_one(int unit)
@@ -1433,6 +1486,19 @@ static int op_do_unmountall(void)
   return 0;
 }
 
+static int op_do_getmount_sub(char *dst, const char *src, size_t dst_len)
+{
+  char *sjis_src = utf8_to_sjis(src);
+  if (sjis_src == NULL) {
+    dst[0] = '\0';
+    return 0;
+  } else {
+    strncpy(dst, sjis_src, dst_len - 1);
+    dst[dst_len - 1] = '\0';
+    return strlen(sjis_src) + 1;
+  }
+}
+
 static int op_do_getmount(int unit, struct smbcmd_getmount *mnt)
 {
   DPRINTF1(" GETMOUNT\r\n");
@@ -1440,20 +1506,10 @@ static int op_do_getmount(int unit, struct smbcmd_getmount *mnt)
     DPRINTF1(" not mounted\r\n");
     return -ENOENT;
   }
-
-  strncpy(mnt->server, rootsmb2[unit]->server, mnt->server_len);
-  mnt->server[mnt->server_len - 1] = '\0';
-  mnt->server_len = strlen(rootsmb2[unit]->server) + 1;
-  strncpy(mnt->share, rootsmb2[unit]->share, mnt->share_len);
-  mnt->share[mnt->share_len - 1] = '\0';
-  mnt->share_len = strlen(rootsmb2[unit]->share) + 1;
-  strncpy(mnt->rootpath, rootpath[unit], mnt->rootpath_len);
-  mnt->rootpath[mnt->rootpath_len - 1] = '\0';
-  mnt->rootpath_len = strlen(rootpath[unit]) + 1;
-  strncpy(mnt->username, rootsmb2[unit]->user, mnt->username_len);
-  mnt->username[mnt->username_len - 1] = '\0';
-  mnt->username_len = strlen(rootsmb2[unit]->user) + 1;
-
+  mnt->server_len = op_do_getmount_sub(mnt->server, rootsmb2[unit]->server, mnt->server_len);
+  mnt->share_len = op_do_getmount_sub(mnt->share, rootsmb2[unit]->share, mnt->share_len);
+  mnt->rootpath_len = op_do_getmount_sub(mnt->rootpath, rootpath[unit], mnt->rootpath_len);
+  mnt->username_len = op_do_getmount_sub(mnt->username, rootsmb2[unit]->user, mnt->username_len);
   return 0;
 }
 
