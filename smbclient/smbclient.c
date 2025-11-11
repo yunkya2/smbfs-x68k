@@ -1233,6 +1233,27 @@ static int cmd_mput(struct smb2_context *smb2, const char *local_path, const cha
 
 //----------------------------------------------------------------------------
 
+static int cmd_date(struct smb2_context *smb2, const char *option)
+{
+  uint64_t server_time;
+
+  server_time = smb2_get_system_time(smb2);
+  // Convert NT time to Unix time
+  server_time = (server_time / 10 / 1000000) - 11644473600;
+
+  printf("サーバの現在時刻: %s\n", format_time((time_t)server_time));
+  if (option != NULL && strcmp(option, "-s") == 0) {
+    struct tm *tm = localtime((time_t *)&server_time);
+    _iocs_timeset(_iocs_timebcd((tm->tm_hour << 16) | (tm->tm_min << 8) | tm->tm_sec));
+    _iocs_bindateset(_iocs_bindatebcd(((tm->tm_year + 1900) << 16) | ((tm->tm_mon + 1) << 8) | tm->tm_mday));
+    printf("サーバの時刻をローカル時刻に設定しました\n");
+  }
+
+  return CMD_DONE;
+}
+
+//----------------------------------------------------------------------------
+
 static int cmd_help(struct smb2_context *smb2, const char *command)
 {
   struct cmd_table *cmd;
@@ -1270,6 +1291,7 @@ static const struct cmd_table cmd_table[] = {
   {"mget",        cmd_mget,    2, "<remote_path> [local_path]", "複数リモートファイルのダウンロード"},
   {"put",         cmd_put,     2, "<local_path> [remote_path]", "ローカルファイルのアップロード"},
   {"mput",        cmd_mput,    2, "<local_path> [remote_path]", "複数ローカルファイルのアップロード"},
+  {"date",        cmd_date,    1, "[-s]",                       "サーバの現在時刻を表示(-sで時刻を設定)"},
   {"quit|exit",   NULL,        0, "",                           "プログラムの終了"},
   {"help",        cmd_help,    0, "[command]",                  "ヘルプの表示"},
   {NULL,          NULL,        0, NULL,                         NULL}
