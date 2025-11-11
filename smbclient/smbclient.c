@@ -1566,6 +1566,7 @@ static void usage(void)
     "使用法: smbclient <smb2-url> [options]\n"
     "オプション:\n"
     "    -U <username[%password]>   - 接続時のユーザ名とパスワードを指定\n"
+    "    -N                         - パスワードをユーザに問い合わせない\n"
     "    -L                         - サーバで利用可能なファイル共有一覧を表示\n"
     "    -c <commands>...           - コマンドを実行 (;で区切って複数指定可能)\n\n"
     "URL フォーマット:\n"
@@ -1585,6 +1586,7 @@ int main(int argc, char *argv[])
   struct smb2_url *url;
   int list_mode = 0;
   int command_mode = 0;
+  int nopass_mode = 0;
   int url_index = 0;
   char *username = NULL;
   char *password = NULL;
@@ -1599,6 +1601,8 @@ int main(int argc, char *argv[])
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-L") == 0) {
       list_mode = 1;
+    } else if (strcmp(argv[i], "-N") == 0) {
+      nopass_mode = 1;
     } else if (strcmp(argv[i], "-U") == 0) {
       if (i + 1 < argc) {
         username = argv[++i];
@@ -1680,7 +1684,7 @@ int main(int argc, char *argv[])
   if (password) {                 // Password is specified in command line (-U)
     smb2_set_password(smb2, password);
   }
-  if (smb2->password == NULL) {   // Password is not specified yet
+  if (!nopass_mode && smb2->password == NULL) {   // Password is not specified yet
     printf("ユーザ名 %s のパスワードを入力: ", smb2->user);
     char *password = getpass("");
     if (password == NULL) {
