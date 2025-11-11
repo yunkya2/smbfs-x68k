@@ -1410,7 +1410,7 @@ static void share_enum_cb(struct smb2_context *smb2, int status,
     const char *comment = rep->ses.ShareInfo.Level1.Buffer->share_info_1[i].remark.utf8;
     uint32_t type = rep->ses.ShareInfo.Level1.Buffer->share_info_1[i].type;
 
-    printf("%-20s ", share_name);
+    printf("%-20s ", utf8_to_sjis(share_name));
 
     const char *typestr;
     switch (type & 3) {
@@ -1431,7 +1431,7 @@ static void share_enum_cb(struct smb2_context *smb2, int status,
       break;
     }
 
-    printf("%-10s %s\n", typestr, comment ? comment : "");
+    printf("%-10s %s\n", typestr, comment ? utf8_to_sjis(comment) : "");
   }
 
   smb2_free_data(smb2, rep);
@@ -1691,12 +1691,14 @@ int main(int argc, char *argv[])
   convert_path_separator(argv[url_index]);
   char *normalized_url = normalize_smb_url(argv[url_index]);
 
+  #if 0
   // Debug: show URL conversion if input was modified
   if (strcmp(normalized_url, argv[url_index]) != 0) {
-//    printf("URL normalized: '%s' -> '%s'\n", argv[url_index], normalized_url);
+    printf("URL normalized: '%s' -> '%s'\n", argv[url_index], normalized_url);
   }
+  #endif
 
-  url = smb2_parse_url(smb2, normalized_url);
+  url = smb2_parse_url(smb2, sjis_to_utf8(normalized_url));
   if (url == NULL) {
     fprintf(stderr, "URL 指定に誤りがあります: %s\n", smb2_get_error(smb2));
     exit(1);
@@ -1713,7 +1715,7 @@ int main(int argc, char *argv[])
     smb2_set_password(smb2, password);
   }
   if (!nopass_mode && smb2->password == NULL) {   // Password is not specified yet
-    printf("ユーザ名 %s のパスワードを入力: ", smb2->user);
+    printf("ユーザ名 %s のパスワードを入力: ", utf8_to_sjis(smb2->user));
     char *password = getpass("");
     if (password == NULL) {
       smb2_destroy_url(url);
