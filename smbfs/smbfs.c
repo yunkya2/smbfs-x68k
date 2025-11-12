@@ -54,20 +54,18 @@
 // Macros and definitions
 //****************************************************************************
 
-#define DEBUG
-
-#define PATH_LEN 256
+#define PATH_LEN  256
 #define MAXUNIT   8
 
 typedef char hostpath_t[PATH_LEN];
 
 struct smbfs_data {
-  struct dos_devheader *devheader;
-  struct dos_dpb *dpbs;
-  int units;
-  int freeable;
-  pthread_t keepalive_thread;
-  pthread_mutex_t keepalive_mutex;
+  struct dos_devheader *devheader;      // 常駐部のデバイスヘッダ
+  struct dos_dpb *dpbs;                 // DPBテーブルへのポインタ
+  int units;                            // ユニット数
+  int freeable;                         // 常駐解除可能フラグ
+  pthread_t keepalive_thread;           // keepaliveスレッド
+  pthread_mutex_t keepalive_mutex;      // keepalive処理用mutex
 };
 
 //****************************************************************************
@@ -77,7 +75,7 @@ struct smbfs_data {
 extern struct dos_devheader devheader;  // Human68kのデバイスヘッダ
 struct dos_req_header *reqheader;       // Human68kからのリクエストヘッダ
 
-struct smbfs_data smbfs_data = {
+struct smbfs_data smbfs_data = {        // 常駐部との共有データ(常駐解除用)
   .devheader = &devheader,
   .keepalive_mutex = PTHREAD_MUTEX_INITIALIZER
 };
@@ -89,7 +87,7 @@ struct smb2_context *rootsmb2[MAXUNIT]; // 各ユニットのsmb2_context
 int debuglevel = 1;
 #endif
 
-char ** const environ_none = { NULL };
+char ** const environ_none = { NULL };  // 空の環境変数リスト
 char **environ;
 
 // TBD stack, heap
@@ -134,8 +132,11 @@ void DNAMEPRINT(void *n, bool full, char *head)
 // Utility routine
 //****************************************************************************
 
+// 常駐時にソケットとスレッドが削除されないようにするためのダミー関数
 void __socket_register_at_exit(void) {}
 void __thread_register_at_exit(void) {}
+
+//----------------------------------------------------------------------------
 
 struct smb2_context *getsmb2(int unit)
 {
@@ -389,7 +390,7 @@ int com_init(struct dos_req_header *req)
   int units = 1;
   _dos_print
     ("\r\nX68000 Samba filesystem (version " GIT_REPO_VERSION ")\r\n");
-
+#if 0
   char *p = (char *)req->status;
   p += strlen(p) + 1;
   while (*p != '\0') {
@@ -419,7 +420,7 @@ int com_init(struct dos_req_header *req)
   _dos_print(":でsmbfsが利用可能です\r\n");
 
   DPRINTF1("Debug level: %d\r\n", debuglevel);
-
+#endif
   return units;
 }
 
@@ -1737,7 +1738,7 @@ void _start()
   // Check whether TCP/IP is available
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) {
-    DPRINTF1("TCP/IP ドライバが常駐していません\r\n");
+    _dos_print("TCP/IP ドライバが常駐していません\r\n");
     _dos_exit();
   }
   DPRINTF1("socket fd=%d\r\n", fd);
@@ -1771,15 +1772,15 @@ void _start()
     }
 
     if (r_devheader == NULL) {
-      printf("SMBFSは常駐していません\n");
+      _dos_print("SMBFSは常駐していません\r\n");
       _dos_exit();
     }
     if (!r_smbfs_data->freeable) {
-      printf("SMBFSはCONFIG.SYSで常駐しているため常駐解除できません\n");
+      _dos_print("SMBFSはCONFIG.SYSで常駐しているため常駐解除できません\r\n");
       _dos_exit();
     }
     if (_dos_ioctrlfdctl(drv + 1, SMBCMD_UNMOUNTALL, NULL) < 0) {
-      printf("使用中のマウントがあるため常駐解除できません\n");
+      _dos_print("使用中のマウントがあるため常駐解除できません\r\n");
       _dos_exit();
     }
 
@@ -1795,6 +1796,8 @@ void _start()
     }
 
     // 常駐しているSMBFSのドライブを削除する
+    _dos_print("ドライブ ");
+    int first = 1;
     for (int drv = 0; drv < 26; drv++) {
       struct dos_curdir *curdir = &curdir_table[(int)drvxtbl[drv]];
       if (curdir->type != 0x40 || curdir->dpb->devheader != r_devheader) {
@@ -1813,8 +1816,12 @@ void _start()
       // 接続ドライブ数を減少
       (*(uint8_t *)0x1c75)--;
 
-      printf("ドライブ %c: のSMBFSを常駐解除しました\n", 'A' + drv);
+      if (!first) _dos_putchar(',');
+      _dos_putchar('A' + drv);
+      _dos_putchar(':');
+      first = 0;
     }
+    _dos_print(" のSMBFSを常駐解除しました\r\n");
 
     _dos_mfree((char *)r_devheader - 0xf0);
     _dos_exit();
@@ -1833,7 +1840,7 @@ void _start()
       if (curdir->type == 0x40) {
         struct dos_dpb *dpb = curdir->dpb;
         if (memcmp(dpb->devheader->name, CONFIG_DEVNAME, 8) == 0) {
-        printf("SMBFSは既にドライブ %c: に常駐しています\n", 'A' + drv);
+        _dos_print("SMBFSは既に常駐しています\r\n");
         _dos_exit();
         }
       } else if (curdir->type == 0 && realdrv <= lastdrive) {
@@ -1843,7 +1850,7 @@ void _start()
     }
 
     if (freedrive < units) {
-      printf("割り当て可能なドライブが不足しています\n");
+      _dos_print("割り当て可能なドライブが不足しています\r\n");
       _dos_exit();
     }
 
@@ -1851,7 +1858,7 @@ void _start()
     smbfs_data.units = units;
     smbfs_data.dpbs = calloc(units, sizeof(struct dos_dpb));
     if (smbfs_data.dpbs == NULL) {
-      printf("メモリ不足で常駐できません\n");
+      _dos_print("メモリ不足で常駐できません\r\n");
       _dos_exit();
     }
 
@@ -1861,13 +1868,15 @@ void _start()
     pthread_attr_setname_np(&attr, "smb_keepalive");
     // TBD stack size
     if (pthread_create(&smbfs_data.keepalive_thread, &attr, keepalive_thread_func, NULL) != 0) {
-      printf("Keepaliveスレッドを作成できません\n");
+      _dos_print("Keepaliveスレッドを作成できません\r\n");
       _dos_exit();
     }
 
     int cur_unit = 0;
 
     // 空きドライブを探してSMBFSのドライブに設定する
+    _dos_print("ドライブ ");
+    int first = 1;
     for (int drv = 0; drv < 26; drv++) {
       int realdrv = drvxtbl[drv];
       struct dos_curdir *curdir = &curdir_table[realdrv];
@@ -1904,7 +1913,10 @@ void _start()
       curdir->fatno = (int)-1;
       curdir->pathlen = 2;
 
-      printf("常駐しました。ドライブ %c: をSMBFSとして使用できます\n", 'A' + drv);
+      if (!first) _dos_putchar(',');
+      _dos_putchar('A' + drv);
+      _dos_putchar(':');
+      first = 0;
 
       // 接続ドライブ数を増加
       (*(uint8_t *)0x1c75)++;
@@ -1913,6 +1925,7 @@ void _start()
         break;
       }
     }
+    _dos_print(" でSMBFSが利用可能です\r\n");
 
     // デバイスドライバのリンクリストにsmbfsを繋ぐ
     struct dos_devheader *prev = find_devheader((struct dos_devheader *)-1);
