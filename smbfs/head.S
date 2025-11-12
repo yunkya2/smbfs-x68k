@@ -22,7 +22,7 @@
  * THE SOFTWARE.
  */
 
-#include <config.h>
+#include "config.h"
 
 /* Human68k device driver header */
 

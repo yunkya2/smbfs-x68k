@@ -25,15 +25,6 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
-#define DEBUG
-
-//#define CONFIG_BOOTDRIVER
 #define CONFIG_DEVNAME      "\x01SMBFS  "
-
-#undef  CONFIG_ALIGNED
-#define CONFIG_NFILEINFO    1
-#define CONFIG_DATASIZE     1024
-#define CONFIG_NDCACHE      2
-#define CONFIG_NFCACHE      1
 
 #endif /* _CONFIG_H_ */

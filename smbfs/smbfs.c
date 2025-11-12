@@ -41,14 +41,14 @@
 #include <libsmb2.h>
 #include <libsmb2-raw.h>
 #include <libsmb2-private.h>
+#include <iconv_mini.h>
 
-#include <config.h>
 #include <humandefs.h>
 #include <smbfscmd.h>
 
+#include "config.h"
 #include "smbfs.h"
 #include "fileop.h"
-#include "iconv_mini.h"
 
 //****************************************************************************
 // Macros and definitions
@@ -1700,6 +1700,9 @@ void _start()
   environ = environ_none;
 
   _dos_setblock(memblock + 0x10, (int)&_end - (int)&devheader + 0xf0);
+
+  _dos_print
+    ("X68000 SMB filesystem (version " GIT_REPO_VERSION ")\r\n");
 
   int units = 1;
   int release = 0;
