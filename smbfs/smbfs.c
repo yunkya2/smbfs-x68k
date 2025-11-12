@@ -88,7 +88,7 @@ int debuglevel = 0;
 
 char ** const environ_none = { NULL };  // 空の環境変数リスト
 char **environ;
-uint32_t _heap_size = 1024 * 512;
+uint32_t _heap_size = 1024 * 128;
 uint32_t _stack_size = 1024 * 32;
 
 //****************************************************************************
@@ -363,6 +363,17 @@ static int check_dpb_busy(struct dos_dpb *dpb)
     }
   }
   return 0;
+}
+
+//----------------------------------------------------------------------------
+
+static int my_atoi(char **p)
+{
+  int res = 0;
+  while (**p >= '0' && **p <= '9') {
+    res = res * 10 + *(*p)++ - '0';
+  }
+  return res;
 }
 
 //****************************************************************************
@@ -1651,6 +1662,7 @@ void start(struct dos_comline *cmdline)
 
   int units = 1;
   int release = 0;
+  int arg;
 
   char *p = (char *)cmdline->buffer;
   DPRINTF1("commandline: %s\r\n", p);
@@ -1668,9 +1680,21 @@ void start(struct dos_comline *cmdline)
 #endif
       case 'd':
       case 'u':
-        if (*p >= '1' && *p <= '8') {
-          units = *p++ - '0';
+        arg = my_atoi(&p);
+        if (arg >= 1 || arg <= MAXUNIT) {
+          units = arg;
           DPRINTF1("units:%d\r\n", units);
+        } else {
+          usage();
+        }
+        break;
+      case 'm':
+        arg = my_atoi(&p);
+        if (arg >= 96) {
+          extern char *_HSTA, *_HEND;
+          _heap_size = arg * 1024;
+          _HEND =  _HSTA + _heap_size;
+          DPRINTF1("heap:%d\r\n", _heap_size);
         } else {
           usage();
         }
