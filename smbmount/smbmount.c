@@ -217,12 +217,15 @@ int get_smbfs_drive(int drive)
 static void usage(void)
 {
   fprintf(stderr, "%s",
+    "smbmount for X68000 version " GIT_REPO_VERSION "\n\n"
     "使用法: smbmount <smb2-url> [drive:] [options]\n"
-    "        smbmount -D [drive:]\n"
+    "        smbmount -D [-a] [drive:]\n"
+    "        smbumount [-a] [drive:]\n"
     "オプション:\n"
     "    -U <username[%password]>   - 接続時のユーザ名とパスワードを指定\n"
     "    -N                         - パスワードをユーザに問い合わせない\n"
-    "    -D                         - マウントを解除\n\n"
+    "    -D                         - マウントを解除\n"
+    "    -a                         - 全ドライブのマウントを解除\n\n"
     "URL フォーマット:\n"
     "    [smb://][<domain>;][<username>@]<host>[:<port>]/<share>[/<path>]\n\n"
     "環境変数 NTLM_USER_FILE で指定したファイルがユーザ情報に使用されます\n"
@@ -238,14 +241,22 @@ int main(int argc, char **argv)
   int unmount_mode = 0;
   int nopass_mode = 0;
   int meminfo_mode = 0;
+  int all_mode = 0;
   int url_index = 0;
   int drvarg = 0;         // 0=最初のSMBFSドライブ 1=A: 2=B: ...
   char *username = NULL;
   char *password = NULL;
 
+  int l = strlen(argv[0]);
+  if (l >= 11 && strcmp(&argv[0][l - 11], "smbumount.x") == 0) {
+    unmount_mode = 1;
+  }
+
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-D") == 0) {
       unmount_mode = 1;
+    } else if (strcmp(argv[i], "-a") == 0) {
+      all_mode = 1;
     } else if (strcmp(argv[i], "-N") == 0) {
       nopass_mode = 1;
     } else if (strcmp(argv[i], "-M") == 0) {
@@ -300,8 +311,10 @@ int main(int argc, char **argv)
   // アンマウント処理
 
   if (unmount_mode) {
-    if (url_index != 0 || username != NULL || password != NULL) {
+    if (url_index != 0 || username != NULL || password != NULL ||
+        (!all_mode && drvarg == 0)) {
       // アンマウント時はドライブ名以外の引数は不要
+      // -a オプションがない場合はドライブ指定が必須
       usage();
       exit(1);
     }
