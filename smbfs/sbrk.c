@@ -7,6 +7,12 @@
 #include <unistd.h>
 #include <errno.h>
 
+char *_HSTA;
+char *_HEND;
+
+//#define SBRK_DEBUG
+
+#ifdef SBRK_DEBUG
 void puthex(int v)
 {
   for (int i = 0; i < 8; i++) {
@@ -16,10 +22,10 @@ void puthex(int v)
     v <<= 4;
   }
 }
+#endif
 
 void *sbrk(ptrdiff_t incr)
 {
-  extern char *_HSTA, *_HEND;     /* Set by linker.  */
   static char *heap_end;
   char *new_heap_end;
   char *prev_heap_end;
@@ -31,17 +37,16 @@ void *sbrk(ptrdiff_t incr)
   new_heap_end = heap_end + incr;
 
   if (new_heap_end > _HEND) {
-    _iocs_b_print("sbrk: need to extend heap\r\n");
-    while (1)
-      ;
+    errno = ENOMEM;
+    return (void *)-1;
   }
 
-#if 0
-  _iocs_b_print("sbrk: ");
+#ifdef SBRK_DEBUG
+  _iocs_b_print("sbrk: size=");
   puthex((int)incr);
-  _iocs_b_print(" ");
+  _iocs_b_print(" prev=");
   puthex((int)prev_heap_end);
-  _iocs_b_print(" ");
+  _iocs_b_print(" new=");
   puthex((int)new_heap_end);
   _iocs_b_print("\r\n");
 #endif

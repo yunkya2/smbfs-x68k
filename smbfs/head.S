@@ -28,7 +28,7 @@
 
     .section    ".header","ax"
 
-    .globl  devheader
+    .global devheader
     .extern reqheader
     .extern interrupt
     .extern smbfs_data
@@ -56,5 +56,25 @@ interrupt_asm:
     move.b  %d0,%a5@(3)             // errl エラーコードを設定
     movem.l %sp@+,%d0-%d2/%a0-%a2/%a5
     rts
+
+/* C startup routine */
+
+    .global _start
+    .extern _HSTA
+    .extern _HEND
+    .extern _heap_size
+    .extern _stack_size
+    .extern start
+
+_start:
+    move.l  %a1,_HSTA
+    add.l   _heap_size,%a1
+    move.l  %a1,_HEND               // setup heap
+    add.l   _stack_size,%a1
+    move.l  %a1,%sp                 // setup stack
+
+    move.l  %a2,%sp@-               // command line address
+    jsr     start
+    .short  0xff00                  // exit
 
     .end

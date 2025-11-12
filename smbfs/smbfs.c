@@ -30,7 +30,6 @@
 #include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
-#include <setjmp.h>
 #include <errno.h>
 #include <sys/socket.h>
 #include <pthread.h>
@@ -63,7 +62,6 @@ struct smbfs_data {
   struct dos_devheader *devheader;      // 常駐部のデバイスヘッダ
   struct dos_dpb *dpbs;                 // DPBテーブルへのポインタ
   int units;                            // ユニット数
-  int freeable;                         // 常駐解除可能フラグ
   pthread_t keepalive_thread;           // keepaliveスレッド
   pthread_mutex_t keepalive_mutex;      // keepalive処理用mutex
 };
@@ -89,12 +87,8 @@ int debuglevel = 1;
 
 char ** const environ_none = { NULL };  // 空の環境変数リスト
 char **environ;
-
-// TBD stack, heap
-char heap[1024 * 512];                // temporary heap for debug print
-void *_HSTA = heap;
-void *_HEND = heap + sizeof(heap);
-void *_PSP;
+uint32_t _heap_size = 1024 * 512;
+uint32_t _stack_size = 1024 * 32;
 
 //****************************************************************************
 // for debugging
@@ -384,45 +378,6 @@ static int my_atoi(char *p)
 //****************************************************************************
 // Device driver interrupt rountine
 //****************************************************************************
-
-int com_init(struct dos_req_header *req)
-{
-  int units = 1;
-  _dos_print
-    ("\r\nX68000 Samba filesystem (version " GIT_REPO_VERSION ")\r\n");
-#if 0
-  char *p = (char *)req->status;
-  p += strlen(p) + 1;
-  while (*p != '\0') {
-    if (*p == '/' || *p =='-') {
-      p++;
-      switch (*p | 0x20) {
-      case 'd':         // /D .. デバッグレベル増加
-        debuglevel++;
-        break;
-      case 'u':         // /u<units> .. ユニット数設定
-        p++;
-        units = my_atoi(p);
-        if (units < 1 || units > 7)
-          units = 1;
-        break;
-      }
-    }
-    p += strlen(p) + 1;
-  }
-
-  _dos_print("ドライブ");
-  _dos_putchar('A' + *(char *)&req->fcb);
-  if (units > 1) {
-    _dos_print(":-");
-    _dos_putchar('A' + *(char *)&req->fcb + units - 1);
-  }
-  _dos_print(":でsmbfsが利用可能です\r\n");
-
-  DPRINTF1("Debug level: %d\r\n", debuglevel);
-#endif
-  return units;
-}
 
 //****************************************************************************
 // Filesystem operations
@@ -1571,11 +1526,6 @@ int interrupt(void)
   uint16_t err = 0;
   struct dos_req_header *req = reqheader;
 
-//  if (setjmp(jenv)) {
-//    return 0;
-//    return com_timeout(req);
-//  }
-
   DPRINTF2("----Command: 0x%02x\r\n", req->command);
 
   pthread_mutex_lock(&smbfs_data.keepalive_mutex);
@@ -1584,16 +1534,7 @@ int interrupt(void)
   case 0x40: /* init */
   {
     req->command = 0; /* for Human68k bug workaround */
-    int r = com_init(req);
-    if (r >= 0) {
-      req->attr = r; /* Number of units */
-      extern char _end;
-      req->addr = &_end;
-      break;
-    } else {
-      err = -r;
-      break;
-    }
+    err = 0x700d;   // CONFIG.SYSでの組み込みは常に失敗させる
     break;
   }
 
@@ -1688,18 +1629,9 @@ int interrupt(void)
 // Program entry
 //****************************************************************************
 
-struct dos_comline *cmdline;
-char *memblock;
-extern char _end;
-
-void _start()
+void start(struct dos_comline *cmdline)
 {
-  __asm__ volatile ("move.l %%a0,%0" : "=m"(memblock));
-  __asm__ volatile ("move.l %%a2,%0" : "=m"(cmdline));
-
   environ = environ_none;
-
-  _dos_setblock(memblock + 0x10, (int)&_end - (int)&devheader + 0xf0);
 
   _dos_print
     ("X68000 SMB filesystem (version " GIT_REPO_VERSION ")\r\n");
@@ -1771,10 +1703,6 @@ void _start()
 
     if (r_devheader == NULL) {
       _dos_print("SMBFSは常駐していません\r\n");
-      _dos_exit();
-    }
-    if (!r_smbfs_data->freeable) {
-      _dos_print("SMBFSはCONFIG.SYSで常駐しているため常駐解除できません\r\n");
       _dos_exit();
     }
     if (_dos_ioctrlfdctl(drv + 1, SMBCMD_UNMOUNTALL, NULL) < 0) {
@@ -1931,8 +1859,7 @@ void _start()
       prev->next = &devheader;
     }
 
-    smbfs_data.freeable = 1;
-
-    _dos_keeppr((int)&_end - (int)&devheader, 0);
+    extern char *_HEND;
+    _dos_keeppr((int)_HEND - (int)&devheader, 0);
   }
 }
