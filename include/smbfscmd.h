@@ -36,6 +36,7 @@
 #define SMBCMD_UNMOUNT      2
 #define SMBCMD_UNMOUNTALL   3
 #define SMBCMD_GETMOUNT     4
+#define SMBCMD_GETMEMINFO   5
 
 struct smbcmd_mount {
     size_t username_len;
@@ -54,6 +55,11 @@ struct smbcmd_getmount {
     char *share;
     char *rootpath;
     char *username;
+};
+
+struct smbcmd_getmeminfo {
+    size_t total_heap_size;
+    size_t used_heap_size;
 };
 
 #endif /* _SMBFSCMD_H_ */

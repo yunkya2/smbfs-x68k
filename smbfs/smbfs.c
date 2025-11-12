@@ -33,6 +33,7 @@
 #include <errno.h>
 #include <sys/socket.h>
 #include <pthread.h>
+#include <malloc.h>
 #include <x68k/dos.h>
 #include <x68k/iocs.h>
 
@@ -1469,6 +1470,16 @@ static int op_do_getmount(int unit, struct smbcmd_getmount *mnt)
   return 0;
 }
 
+static int op_do_getmeminfo(struct smbcmd_getmeminfo *meminfo)
+{
+  DPRINTF1(" GETMEMINFO\r\n");
+  struct mallinfo mi = mallinfo();
+
+  meminfo->total_heap_size = _heap_size;
+  meminfo->used_heap_size = mi.uordblks;
+  return 0;
+}
+
   /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 int op_ioctl(struct dos_req_header *req)
@@ -1491,6 +1502,8 @@ int op_ioctl(struct dos_req_header *req)
     return op_do_unmountall();
   case SMBCMD_GETMOUNT:
     return op_do_getmount(unit, (struct smbcmd_getmount *)req->addr);
+  case SMBCMD_GETMEMINFO:
+    return op_do_getmeminfo((struct smbcmd_getmeminfo *)req->addr);
   default:
     return -EINVAL;
   }
@@ -1859,6 +1872,8 @@ void start(struct dos_comline *cmdline)
       prev->next = &devheader;
     }
 
+    // ヒープ領域の末尾までを常駐して終了する
+    // (ヒープの後ろにあるスタック領域は常駐しない)
     extern char *_HEND;
     _dos_keeppr((int)_HEND - (int)&devheader, 0);
   }

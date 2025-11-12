@@ -237,6 +237,7 @@ int main(int argc, char **argv)
 {
   int unmount_mode = 0;
   int nopass_mode = 0;
+  int meminfo_mode = 0;
   int url_index = 0;
   int drvarg = 0;         // 0=最初のSMBFSドライブ 1=A: 2=B: ...
   char *username = NULL;
@@ -247,6 +248,8 @@ int main(int argc, char **argv)
       unmount_mode = 1;
     } else if (strcmp(argv[i], "-N") == 0) {
       nopass_mode = 1;
+    } else if (strcmp(argv[i], "-M") == 0) {
+      meminfo_mode = 1;
     } else if (strcmp(argv[i], "-U") == 0) {
       if (i + 1 < argc) {
         username = argv[++i];
@@ -278,8 +281,19 @@ int main(int argc, char **argv)
     printf("SMBFSが常駐していません\n");
     exit(1);
   } else if (drive == 0) {
-    printf("ドライブ %c: はSMBFSではありません\n", 'A' + drive - 1);
+    printf("ドライブ %c: はSMBFSではありません\n", 'A' + drvarg - 1);
     exit(1);
+  }
+
+  ////////////////////////////////////////////////////////////////////////////
+  // 常駐部のメモリ情報表示
+
+  if (meminfo_mode) {
+    struct smbcmd_getmeminfo meminfo;
+    _dos_ioctrlfdctl(drive, SMBCMD_GETMEMINFO, (void *)&meminfo);
+    printf("Total heap size: %u bytes\n", (unsigned int)meminfo.total_heap_size);
+    printf("Used heap size:  %u bytes\n", (unsigned int)meminfo.used_heap_size);
+    exit(0);
   }
 
   ////////////////////////////////////////////////////////////////////////////
