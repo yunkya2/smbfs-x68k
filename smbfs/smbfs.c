@@ -83,7 +83,7 @@ char *rootpath[MAXUNIT];                // 各ユニットのホストパス
 struct smb2_context *rootsmb2[MAXUNIT]; // 各ユニットのsmb2_context
 
 #ifdef DEBUG
-int debuglevel = 1;
+int debuglevel = 0;
 #endif
 
 char ** const environ_none = { NULL };  // 空の環境変数リスト
@@ -363,17 +363,6 @@ static int check_dpb_busy(struct dos_dpb *dpb)
     }
   }
   return 0;
-}
-
-//----------------------------------------------------------------------------
-
-static int my_atoi(char *p)
-{
-  int res = 0;
-  while (*p >= '0' && *p <= '9') {
-    res = res * 10 + *p++ - '0';
-  }
-  return res;
 }
 
 //****************************************************************************
@@ -1642,6 +1631,17 @@ int interrupt(void)
 // Program entry
 //****************************************************************************
 
+void usage(void)
+{
+  _dos_print(
+     "使用法: smbfs [/u<ドライブ数>] [/r]\r\n"
+     "オプション:\r\n"
+     "    /u<ドライブ数>  - smbfsで利用するドライブ数を指定します (1-8)\r\n"
+     "    /r              - 常駐しているsmbfsを常駐解除します\r\n"
+    );
+  _dos_exit2(1);
+}
+
 void start(struct dos_comline *cmdline)
 {
   environ = environ_none;
@@ -1655,26 +1655,35 @@ void start(struct dos_comline *cmdline)
   char *p = (char *)cmdline->buffer;
   DPRINTF1("commandline: %s\r\n", p);
   while (*p != '\0') {
-    if (*p == '/' || *p == '-') {
+    if (*p == ' ' || *p == '\t') {
       p++;
-      switch (*p | 0x20) {
+    } else if (*p == '/' || *p == '-') {
+      p++;
+      switch (*p++) {
+#ifdef DEBUG
+      case 'D':
+        debuglevel++;
+        DPRINTF1("debug level:%d\r\n", debuglevel);
+        break;
+#endif
       case 'd':
       case 'u':
-        if (p[1] >= '1' && p[1] <= '8') {
-          units = p[1] - '0';
-          DPRINTF1("drives:%d\r\n", units);
-          p++;
+        if (*p >= '1' && *p <= '8') {
+          units = *p++ - '0';
+          DPRINTF1("units:%d\r\n", units);
+        } else {
+          usage();
         }
-        p++;
         break;
       case 'r':
         release = 1;
         DPRINTF1("release\r\n");
-        p++;
-      break;
+        break;
+      default:
+        usage();
       }
     } else {
-      p++;
+      usage();
     }
   }
 
