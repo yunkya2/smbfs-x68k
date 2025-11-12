@@ -36,8 +36,6 @@
 #define SMBCMD_UNMOUNT      2
 #define SMBCMD_UNMOUNTALL   3
 #define SMBCMD_GETMOUNT     4
-#define SMBCMD_SHAREENUM    5
-#define SMBCMD_GETTIME      10
 
 struct smbcmd_mount {
     size_t username_len;
@@ -56,25 +54,6 @@ struct smbcmd_getmount {
     char *share;
     char *rootpath;
     char *username;
-};
-
-struct smbcmd_shareenum {
-    int port;
-    int n_items;
-    char user[64];
-    char passwd[64];
-    char workgroup[64];
-    char server[64];
-    char share[16][64];
-};
-
-struct smbcmd_gettime {
-    uint16_t year;
-    uint8_t mon;
-    uint8_t day;
-    uint8_t hour;
-    uint8_t min;
-    uint8_t sec;
 };
 
 #endif /* _SMBFSCMD_H_ */

@@ -1536,11 +1536,6 @@ int op_ioctl(struct dos_req_header *req)
     return op_do_unmountall();
   case SMBCMD_GETMOUNT:
     return op_do_getmount(unit, (struct smbcmd_getmount *)req->addr);
-
-  case SMBCMD_GETTIME:
-    DPRINTF1(" GETTIME\r\n");
-    return 0;
-
   default:
     return -EINVAL;
   }
