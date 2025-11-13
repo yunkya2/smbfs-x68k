@@ -63,6 +63,7 @@ struct smbfs_data {
   struct dos_devheader *devheader;      // 常駐部のデバイスヘッダ
   struct dos_dpb *dpbs;                 // DPBテーブルへのポインタ
   int units;                            // ユニット数
+  struct smb2_context **rootsmb2;       // 各ユニットのsmb2_contextへのポインタ
   pthread_t keepalive_thread;           // keepaliveスレッド
   pthread_mutex_t keepalive_mutex;      // keepalive処理用mutex
 };
@@ -74,13 +75,14 @@ struct smbfs_data {
 extern struct dos_devheader devheader;  // Human68kのデバイスヘッダ
 struct dos_req_header *reqheader;       // Human68kからのリクエストヘッダ
 
-struct smbfs_data smbfs_data = {        // 常駐部との共有データ(常駐解除用)
-  .devheader = &devheader,
-  .keepalive_mutex = PTHREAD_MUTEX_INITIALIZER
-};
-
 char *rootpath[MAXUNIT];                // 各ユニットのホストパス
 struct smb2_context *rootsmb2[MAXUNIT]; // 各ユニットのsmb2_context
+
+struct smbfs_data smbfs_data = {        // 常駐部との共有データ(常駐解除用)
+  .devheader = &devheader,
+  .rootsmb2 = rootsmb2,
+  .keepalive_mutex = PTHREAD_MUTEX_INITIALIZER
+};
 
 #ifdef DEBUG
 int debuglevel = 0;
@@ -1767,9 +1769,11 @@ void start(struct dos_comline *cmdline)
       _dos_print("SMBFSは常駐していません\r\n");
       _dos_exit();
     }
-    if (_dos_ioctrlfdctl(drv + 1, SMBCMD_UNMOUNTALL, NULL) < 0) {
-      _dos_print("使用中のマウントがあるため常駐解除できません\r\n");
-      _dos_exit();
+    for (int i = 0; i < r_smbfs_data->units; i++) {
+      if ((r_smbfs_data->rootsmb2)[i] != NULL) {
+        _dos_print("マウントされているドライブがあるため常駐解除できません\r\n");
+        _dos_exit();
+      }
     }
 
     // Keepaliveスレッドを終了する
