@@ -53,7 +53,7 @@ LIBSMB2 = libsmb2.a
 LIBS += $(LIBSMB2)
 
 all: smbfs.x
-	cp smbfs.x ..
+	cp $^ ..
 
 smbfs.x: $(OBJS) $(LIBSMB2)
 	$(LD) -o $@ $^ $(LDFLAGS) -nostartfiles -s

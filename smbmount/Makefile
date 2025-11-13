@@ -44,7 +44,7 @@ OBJS += smbmount.o
 LIBS +=
 
 all: smbmount.x
-	cp smbmount.x ..
+	cp $^ ..
 
 smbmount.x: $(OBJS) $(LIBS)
 	$(LD) -o $@ $^ $(LDFLAGS) -s

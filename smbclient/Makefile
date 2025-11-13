@@ -47,6 +47,7 @@ LIBSMB2 = libsmb2.a
 LIBS += $(LIBSMB2)
 
 all: smbclient.x
+	cp $^ ..
 
 smbclient.x: $(OBJS) $(LIBS)
 	$(LD) -o $@ $^ $(LDFLAGS) -s

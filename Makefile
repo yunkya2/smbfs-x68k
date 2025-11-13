@@ -23,23 +23,22 @@
 
 SUBDIR = smbfs smbmount smbclient
 
-all:
-	for dir in $(SUBDIR); do \
-	  $(MAKE) -C $$dir all; \
-	done
+all: $(SUBDIR)
+
+$(SUBDIR):
+	$(MAKE) -C $@ all
 
 clean distclean:
 	for dir in $(SUBDIR); do \
 	  $(MAKE) -C $$dir $@; \
 	done
-	-rm -f *.x README.txt
+	-rm -f $(SUBDIR:%=%.x) README.txt
 
 GIT_REPO_VERSION=$(shell git describe --tags --always)
 
 release: distclean all
-	cp smbclient/smbclient.x .
 	./md2txtconv.py README.md
-	zip -r smbclient-$(GIT_REPO_VERSION).zip README.txt smbclient.x
+	zip -r smbfs-$(GIT_REPO_VERSION).zip README.txt $(SUBDIR:%=%.x)
 
 .PHONY: all clean distclean release
-.PHONY: smbfs smbmount smbclient
+.PHONY: $(SUBDIR)
