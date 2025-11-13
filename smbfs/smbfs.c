@@ -1837,8 +1837,9 @@ void start(struct dos_comline *cmdline)
     // Keepaliveスレッドを作成する
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_attr_setname_np(&attr, "smb_keepalive");
-    // TBD stack size
+    pthread_attr_setname_np(&attr, "smbfs_keepalive");
+    pthread_attr_setstacksize(&attr, 4 * 1024);
+    pthread_attr_setsystemstacksize_np(&attr, 2 * 1024);
     if (pthread_create(&smbfs_data.keepalive_thread, &attr, keepalive_thread_func, NULL) != 0) {
       _dos_print("Keepaliveスレッドを作成できません\r\n");
       _dos_exit();
