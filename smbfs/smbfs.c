@@ -1332,8 +1332,7 @@ static int op_do_mount(int unit, struct smbcmd_mount *mnt)
 
   // NTLM_USER_FILEにパスワードがなく、マウント時のパスワード指定もない場合はユーザに問い合わせる
   if (smb2->password == NULL) {
-    // TBD:smb2->userはUTF-8なので、必要に応じて変換する
-    strncpy(mnt->username, smb2->user, mnt->username_len);
+    strncpy(mnt->username, utf8_to_sjis(smb2->user), mnt->username_len);
     mnt->username[mnt->username_len - 1] = '\0';
     mnt->username_len = strlen(smb2->user) + 1;
     DPRINTF1("  -> NOPASS\r\n");
