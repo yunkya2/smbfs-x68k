@@ -843,7 +843,7 @@ int op_nfiles(struct dos_req_header *req)
 
   DPRINTF1("NFILES: ");
 
-    if ((dl = dl_alloc(req->status, false)) == NULL) {
+  if ((dl = dl_alloc(req->status, false)) == NULL) {
     DPRINTF1("-> ILGARG\r\n");
     return _DOSE_ILGARG;
   }
@@ -897,7 +897,12 @@ static fdinfo_t *fi_alloc(int unit, uint32_t fcb, bool alloc)
     }
   }
   fi_size++;                    // バッファが不足しているので拡張する
-  fi_store = realloc(fi_store, sizeof(fdinfo_t) * fi_size);   // TBD: エラー処理
+  fdinfo_t *fi_new = realloc(fi_store, sizeof(fdinfo_t) * fi_size);
+  if (fi_new == NULL) {
+    fi_size--;
+    return NULL;
+  }
+  fi_store = fi_new;
   fi_store[fi_size - 1].fcb = fcb;
   fi_store[fi_size - 1].fd = FD_BADFD;
   fi_store[fi_size - 1].unit = unit;
@@ -958,6 +963,12 @@ int op_create(struct dos_req_header *req)
   }
   
   fdinfo_t *fi = fi_alloc(req->unit, (uint32_t)req->fcb, true);
+  if (fi == NULL) {
+    FUNC_CLOSE(req->unit, NULL, filefd);
+    DPRINTF1("-> NOMEM\r\n");
+    return _DOSE_NOMEM;
+  }
+
   fi->fd = filefd;
   fi->pos = 0;
   dos_fcb_size(req->fcb) = 0;
@@ -1010,6 +1021,12 @@ int op_open(struct dos_req_header *req)
   }
   
   fdinfo_t *fi = fi_alloc(req->unit, (uint32_t)req->fcb, true);
+  if (fi == NULL) {
+    FUNC_CLOSE(req->unit, NULL, filefd);
+    DPRINTF1("-> NOMEM\r\n");
+    return _DOSE_NOMEM;
+  }
+
   fi->fd = filefd;
   fi->pos = 0;
   uint32_t len = FUNC_LSEEK(req->unit, NULL, filefd, 0, SEEK_END);
