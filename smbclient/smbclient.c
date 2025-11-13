@@ -47,7 +47,7 @@
 #include <libsmb2.h>
 #include <libsmb2-raw.h>
 #include <libsmb2-private.h>
-#include "iconv_mini.h"
+#include <iconv_mini.h>
 
 //****************************************************************************
 // Macros and definitions
@@ -1621,11 +1621,6 @@ int main(int argc, char *argv[])
   char *command_string = NULL;
 
   // Parse command line options
-  if (argc < 2) {
-    usage();
-    exit(1);
-  }
-
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-L") == 0) {
       list_mode = 1;
@@ -1672,6 +1667,11 @@ int main(int argc, char *argv[])
       usage();
       exit(1);
     }
+  }
+
+  if (url_index == 0) {
+    usage();
+    exit(1);
   }
 
   // Check whether TCP/IP is available
@@ -1758,7 +1758,7 @@ int main(int argc, char *argv[])
     pthread_mutex_lock(&keepalive_mutex);
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_attr_setname_np(&attr, "smb_keepalive");
+    pthread_attr_setname_np(&attr, "smbclient_keep");
     if (pthread_create(&keepalive_thread, &attr, keepalive_thread_func, smb2) != 0) {
       printf("Failed to create keepalive thread\n");
       smb2_disconnect_share(smb2);
