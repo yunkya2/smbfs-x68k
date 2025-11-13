@@ -21,25 +21,47 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-SUBDIR = smbfs smbmount smbclient
-
-all:
-	for dir in $(SUBDIR); do \
-	  $(MAKE) -C $$dir all; \
-	done
-
-clean distclean:
-	for dir in $(SUBDIR); do \
-	  $(MAKE) -C $$dir $@; \
-	done
-	-rm -f *.x README.txt
+CROSS = m68k-xelf-
+CC = $(CROSS)gcc
+AS = $(CROSS)gcc
+LD = $(CROSS)gcc
+AR = $(CROSS)ar
+RANLIB = $(CROSS)ranlib
 
 GIT_REPO_VERSION=$(shell git describe --tags --always)
 
-release: distclean all
-	cp smbclient/smbclient.x .
-	./md2txtconv.py README.md
-	zip -r smbclient-$(GIT_REPO_VERSION).zip README.txt smbclient.x
+CFLAGS = -Wall -Os -g $(INC) $(DEFS) -MMD -MP
+CFLAGS += -DGIT_REPO_VERSION=\"$(GIT_REPO_VERSION)\"
+ASFLAGS = -I. -MMD -MP
+LDFLAGS += -Wl,-Map,$(@:.x=.map) -specs=nano.specs
 
-.PHONY: all clean distclean release
-.PHONY: smbfs smbmount smbclient
+INC += -I. -I../include
+INC += -I../libsmb2/include -I../libsmb2/include/smb2
+DEFS +=
+
+OBJS += smbmount.o
+
+LIBS +=
+
+all: smbmount.x
+	cp smbmount.x ..
+
+smbmount.x: $(OBJS) $(LIBS)
+	$(LD) -o $@ $^ $(LDFLAGS) -s
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+%.o: %.S
+	$(AS) $(ASFLAGS) -c -o $@ $<
+
+DEPS = $(OBJS:.o=.d)
+
+clean:
+	-rm -f $(OBJS) $(DEPS) *.x *.elf* *.map
+
+distclean: clean
+
+-include $(DEPS)
+
+.PHONY: all clean distclean
