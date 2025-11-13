@@ -47,14 +47,19 @@
 #include <libsmb2.h>
 #include <libsmb2-raw.h>
 #include <libsmb2-private.h>
-#include "iconv_mini.h"
+#include <iconv_mini.h>
 
 //****************************************************************************
 // Macros and definitions
 //****************************************************************************
 
 #define PATH_LEN 256
-#define TIMEZONE (9 * 3600) // JST (UTC+9)
+
+/* execute_command() result code */
+#define CMD_EXIT    1
+#define CMD_DONE    0
+#define CMD_ERROR   -1
+#define CMD_HELP    -2
 
 //****************************************************************************
 // Global variables
@@ -379,7 +384,6 @@ static const char *format_time(uint64_t timestamp)
   static char time_str[64];
   time_t t = (time_t)timestamp;
 
-  t += TIMEZONE;
   struct tm *tm_info = localtime(&t);
   
   if (tm_info) {
@@ -408,21 +412,6 @@ static const char *format_size(uint64_t size)
   }
   
   return size_str;
-}
-
-static const char *format_uint64(uint64_t value)
-{
-  static char buf[32];
-  char *p = buf;
-
-  if (value >= 1000000000ULL) {
-    sprintf(p, "%lu", (unsigned long)(value / 1000000000ULL));
-    p += strlen(buf);
-    sprintf(p, "%09lu", (unsigned long)(value % 1000000000ULL));
-  } else {
-    sprintf(p, "%lu", (unsigned long)value);
-  }
-  return buf;
 }
 
 //****************************************************************************
@@ -475,7 +464,7 @@ static int cmd_ls(struct smb2_context *smb2, const char *path)
   dir = smb2_opendir(smb2, sjis_to_utf8(directory_path + 1));
   if (dir == NULL) {
     printf("ディレクトリ '%s'を開けません: %s\n", directory_path, smb2_get_error(smb2));
-    return 0;
+    return CMD_ERROR;
   }
 
   int found = false;
@@ -523,7 +512,7 @@ static int cmd_ls(struct smb2_context *smb2, const char *path)
   if (!found) {
     printf("ファイルがありません\n");
   }
-  return 0;
+  return CMD_DONE;
 }
 
 //----------------------------------------------------------------------------
@@ -536,7 +525,7 @@ static int cmd_cd(struct smb2_context *smb2, const char *path)
   if (path == NULL || strlen(path) == 0) {
     // No argument - show current directory
     printf("%s\n", current_dir);
-    return 0;
+    return CMD_DONE;
   }
   
   resolved_path = resolve_path(path);
@@ -545,7 +534,7 @@ static int cmd_cd(struct smb2_context *smb2, const char *path)
   dir = smb2_opendir(smb2, sjis_to_utf8(resolved_path + 1));
   if (dir == NULL) {
     printf("ディレクトリ '%s' に移動できません: %s\n", resolved_path, smb2_get_error(smb2));
-    return 0;
+    return CMD_ERROR;
   }
   
   smb2_closedir(smb2, dir);
@@ -560,7 +549,7 @@ static int cmd_cd(struct smb2_context *smb2, const char *path)
   }
   
   printf("ディレクトリ '%s' に移動しました\n", current_dir);
-  return 0;
+  return CMD_DONE;
 }
 
 //----------------------------------------------------------------------------
@@ -570,18 +559,18 @@ static int cmd_mkdir(struct smb2_context *smb2, const char *path)
   char *target_path;
   
   if (path == NULL || strlen(path) == 0) {
-    return -1;
+    return CMD_HELP;
   }
   
   target_path = resolve_path(path);
   
   if (smb2_mkdir(smb2, sjis_to_utf8(target_path + 1)) != 0) {
     printf("ディレクトリ '%s' を作成できません: %s\n", target_path, smb2_get_error(smb2));
-    return 0;
+    return CMD_ERROR;
   }
   
   printf("ディレクトリ '%s' を作成しました\n", target_path);
-  return 0;
+  return CMD_DONE;
 }
 
 //----------------------------------------------------------------------------
@@ -591,18 +580,18 @@ static int cmd_rmdir(struct smb2_context *smb2, const char *path)
   char *target_path;
   
   if (path == NULL || strlen(path) == 0) {
-    return -1;
+    return CMD_HELP;
   }
   
   target_path = resolve_path(path);
   
   if (smb2_rmdir(smb2, sjis_to_utf8(target_path + 1)) != 0) {
     printf("ディレクトリ '%s' を削除できません: %s\n", target_path, smb2_get_error(smb2));
-    return 0;
+    return CMD_ERROR;
   }
   
   printf("ディレクトリ '%s' を削除しました\n", target_path);
-  return 0;
+  return CMD_DONE;
 }
 
 //----------------------------------------------------------------------------
@@ -612,18 +601,18 @@ static int cmd_rm(struct smb2_context *smb2, const char *path)
   char *target_path;
   
   if (path == NULL || strlen(path) == 0) {
-    return -1;
+    return CMD_HELP;
   }
   
   target_path = resolve_path(path);
   
   if (smb2_unlink(smb2, sjis_to_utf8(target_path + 1)) != 0) {
     printf("ファイル '%s' を削除できません: %s\n", target_path, smb2_get_error(smb2));
-    return 0;
+    return CMD_ERROR;
   }
   
   printf("ファイル '%s' を削除しました\n", target_path);
-  return 0;
+  return CMD_DONE;
 }
 
 //----------------------------------------------------------------------------
@@ -632,7 +621,7 @@ static int cmd_rename(struct smb2_context *smb2, const char *old_path, const cha
 {
   if (old_path == NULL || strlen(old_path) == 0 || 
       new_path == NULL || strlen(new_path) == 0) {
-    return -1;
+    return CMD_HELP;
   }
 
   char target_old[PATH_LEN];
@@ -647,11 +636,11 @@ static int cmd_rename(struct smb2_context *smb2, const char *old_path, const cha
 
   if (smb2_rename(smb2, target_old_utf8, target_new_utf8) != 0) {
     printf("ファイル名 '%s' を '%s' に変更できません: %s\n", target_old, target_new, smb2_get_error(smb2));
-    return 0;
+    return CMD_ERROR;
   }
   
   printf("ファイル名 '%s' を '%s' に変更しました\n", target_old, target_new);
-  return 0;
+  return CMD_DONE;
 }
 
 //----------------------------------------------------------------------------
@@ -663,14 +652,14 @@ static int cmd_stat(struct smb2_context *smb2, const char *path)
   const char *type;
   
   if (path == NULL || strlen(path) == 0) {
-    return -1;
+    return CMD_HELP;
   }
 
   target_path = resolve_path(path);
 
   if (smb2_stat(smb2, sjis_to_utf8(target_path + 1), &st) != 0) {
     printf("ファイル '%s' の情報を取得できません: %s\n", target_path, smb2_get_error(smb2));
-    return 0;
+    return CMD_ERROR;
   }
   
   switch (st.smb2_type) {
@@ -690,14 +679,14 @@ static int cmd_stat(struct smb2_context *smb2, const char *path)
   
   printf("File: %s\n", target_path);
   printf("Type: %s\n", type);
-  printf("Size: %s (%s bytes)\n", format_size(st.smb2_size), format_uint64(st.smb2_size));
-  printf("Inode: %s\n", format_uint64(st.smb2_ino));
+  printf("Size: %llu (%llu bytes)\n", st.smb2_size, st.smb2_size);
+  printf("Inode: %llu\n", st.smb2_ino);
   printf("Links: %lu\n", (unsigned long)st.smb2_nlink);
   printf("Access time: %s\n", format_time(st.smb2_atime));
   printf("Modify time: %s\n", format_time(st.smb2_mtime));
   printf("Change time: %s\n", format_time(st.smb2_ctime));
   printf("Birth time:  %s\n", format_time(st.smb2_btime));
-  return 0;
+  return CMD_DONE;
 }
 
 //----------------------------------------------------------------------------
@@ -718,7 +707,7 @@ static int cmd_statvfs(struct smb2_context *smb2, const char *path)
 
   if (smb2_statvfs(smb2, sjis_to_utf8(target_path + 1), &statvfs) != 0) {
     printf("ファイルシステム '%s' の情報を取得できません: %s\n", target_path, smb2_get_error(smb2));
-    return 0;
+    return CMD_ERROR;
   }
   
   total_space = (uint64_t)statvfs.f_blocks * statvfs.f_bsize;
@@ -728,13 +717,13 @@ static int cmd_statvfs(struct smb2_context *smb2, const char *path)
   
   printf("Filesystem statistics for: %s\n", target_path);
   printf("Block size:       %lu bytes\n", (unsigned long)statvfs.f_bsize);
-  printf("Total blocks:     %s\n", format_uint64(statvfs.f_blocks));
-  printf("Free blocks:      %s\n", format_uint64(statvfs.f_bfree));
-  printf("Total space:      %s (%s bytes)\n", format_size(total_space), format_uint64(total_space));
-  printf("Used space:       %s (%s bytes)\n", format_size(used_space), format_uint64(used_space));
-  printf("Free space:       %s (%s bytes)\n", format_size(free_space), format_uint64(free_space));
+  printf("Total blocks:     %llu\n", statvfs.f_blocks);
+  printf("Free blocks:      %llu\n", statvfs.f_bfree);
+  printf("Total space:      %s (%llu bytes)\n", format_size(total_space), total_space);
+  printf("Used space:       %s (%llu bytes)\n", format_size(used_space), used_space);
+  printf("Free space:       %s (%llu bytes)\n", format_size(free_space), free_space);
   printf("Usage:            %.1f%%\n", usage_percent);
-  return 0;
+  return CMD_DONE;
 }
 
 //----------------------------------------------------------------------------
@@ -743,7 +732,7 @@ static int cmd_lcd(struct smb2_context *smb2, const char *path)
 {
   if (path != NULL && chdir(path) != 0) {
     printf("ローカルディレクトリ '%s' に移動できません: %s\n", path, strerror(errno));
-    return 0;
+    return CMD_ERROR;
   }
 
   // No argument - show current local directory
@@ -756,7 +745,7 @@ static int cmd_lcd(struct smb2_context *smb2, const char *path)
   convert_path_separator(local_dir);
 
   printf(path == NULL ? "%s\n" : "ローカルディレクトリ '%s' に移動しました\n", local_dir);
-  return 0;
+  return CMD_DONE;
 }
 
 //----------------------------------------------------------------------------
@@ -773,7 +762,7 @@ static int get_one_file(struct smb2_context *smb2, const char *target_remote, co
   fh = smb2_open(smb2, sjis_to_utf8(target_remote + 1), O_RDONLY);
   if (fh == NULL) {
     printf("リモートファイル '%s' を開けません: %s\n", target_remote, smb2_get_error(smb2));
-    return -1;
+    return CMD_ERROR;
   }
   
   // Open local file for writing
@@ -781,7 +770,7 @@ static int get_one_file(struct smb2_context *smb2, const char *target_remote, co
   if (local_fd < 0) {
     printf("ローカルファイル '%s' を作成できません: %s\n", target_local, strerror(errno));
     smb2_close(smb2, fh);
-    return -1;
+    return CMD_ERROR;
   }
   
   printf("ファイル '%s' を '%s' にダウンロードします\n", target_remote, target_local);
@@ -799,12 +788,12 @@ static int get_one_file(struct smb2_context *smb2, const char *target_remote, co
     printf("リモートファイルを読み込めません: %s\n", smb2_get_error(smb2));
     close(local_fd);
     smb2_close(smb2, fh);
-    return -1;
+    return CMD_ERROR;
   }
 
   struct smb2_stat_64 st;
   if (smb2_fstat(smb2, fh, &st) == 0) {
-    time_t mtime = (time_t)st.smb2_mtime + TIMEZONE;
+    time_t mtime = (time_t)st.smb2_mtime;
     struct tm *tm = localtime(&mtime);
     uint32_t datetime;
     datetime = ((tm->tm_year - 80) << 25) |
@@ -821,7 +810,7 @@ static int get_one_file(struct smb2_context *smb2, const char *target_remote, co
 #else
   printf("Simulated download of '%s' to '%s'\n", target_remote, target_local);
 #endif
-  return 0;
+  return CMD_DONE;
 }
 
 static int get_multiple_files(struct smb2_context *smb2, const char *target_remote, const char *target_local)
@@ -865,7 +854,7 @@ static int get_multiple_files(struct smb2_context *smb2, const char *target_remo
   dir = smb2_opendir(smb2, sjis_to_utf8(directory_path + 1));
   if (dir == NULL) {
     printf("リモートディレクトリ '%s' を開けません: %s\n", directory_path, smb2_get_error(smb2));
-    return -1;
+    return CMD_ERROR;
   }
 
   while ((ent = smb2_readdir(smb2, dir))) {
@@ -935,7 +924,7 @@ static int cmd_get(struct smb2_context *smb2, const char *remote_path, const cha
   struct stat st;
 
   if (remote_path == NULL || strlen(remote_path) == 0) {
-    return -1;
+    return CMD_HELP;
   }
   
   target_remote = resolve_path(remote_path);
@@ -965,8 +954,7 @@ static int cmd_get(struct smb2_context *smb2, const char *remote_path, const cha
     target_local = local_full_path;
   }
 
-  get_one_file(smb2, target_remote, target_local);
-  return 0;
+  return get_one_file(smb2, target_remote, target_local);
 }
 
 static int cmd_mget(struct smb2_context *smb2, const char *remote_path, const char *local_path)
@@ -975,7 +963,7 @@ static int cmd_mget(struct smb2_context *smb2, const char *remote_path, const ch
   struct stat st;
 
   if (remote_path == NULL || strlen(remote_path) == 0) {
-    return -1;
+    return CMD_HELP;
   }
   
   if (local_path == NULL || strlen(local_path) == 0) {
@@ -988,17 +976,18 @@ static int cmd_mget(struct smb2_context *smb2, const char *remote_path, const ch
         strcmp(local_path, "..") == 0 ||
         (stat(local_path, &st) == 0 && S_ISDIR(st.st_mode)))) {
     printf("ローカルパス '%s' はディレクトリではありません\n", local_path);
-    return 0;
+    return CMD_ERROR;
   }
 
   int files_downloaded = get_multiple_files(smb2, target_remote, local_path);
   
   if (files_downloaded < 0) {
     printf("ファイルのダウンロード中にエラーが発生しました\n");
+    return CMD_ERROR;
   } else {
     printf("%d 個のファイルをダウンロードしました\n", files_downloaded);
+    return CMD_DONE;
   }
-  return 0;
 }
 
 //----------------------------------------------------------------------------
@@ -1015,7 +1004,7 @@ static int put_one_file(struct smb2_context *smb2, const char *target_local, con
   local_fd = open(target_local, O_RDONLY | O_BINARY);
   if (local_fd < 0) {
     printf("ローカルファイル '%s' を開けません: %s\n", target_local, strerror(errno));
-    return -1;
+    return CMD_ERROR;
   }
   
   // Open remote file for writing
@@ -1023,7 +1012,7 @@ static int put_one_file(struct smb2_context *smb2, const char *target_local, con
   if (fh == NULL) {
     printf("リモートファイル '%s' を作成できません: %s\n", target_remote, smb2_get_error(smb2));
     close(local_fd);
-    return -1;
+    return CMD_ERROR;
   }
   
   printf("ファイル '%s' を '%s' にアップロードします\n", target_local, target_remote);
@@ -1041,7 +1030,7 @@ static int put_one_file(struct smb2_context *smb2, const char *target_local, con
     printf("ローカルファイルを読み込めません: %s\n", strerror(errno));
     close(local_fd);
     smb2_close(smb2, fh);
-    return -1;
+    return CMD_ERROR;
   }
 
   uint32_t datetime;
@@ -1055,7 +1044,7 @@ static int put_one_file(struct smb2_context *smb2, const char *target_local, con
     tm.tm_hour = (datetime >> 11) & 0x1f;
     tm.tm_min  = (datetime >> 5) & 0x3f;
     tm.tm_sec  = (datetime << 1) & 0x3f;
-    time_t mtime = mktime(&tm) - TIMEZONE;
+    time_t mtime = mktime(&tm);
     tv[0].tv_sec = mtime;
     tv[0].tv_usec = 0;
     tv[1].tv_sec = mtime;
@@ -1068,7 +1057,7 @@ static int put_one_file(struct smb2_context *smb2, const char *target_local, con
 #else
   printf("Simulated upload of '%s' to '%s'\n", target_local, target_remote);
 #endif
-  return 0;
+  return CMD_DONE;
 }
 
 static int put_multiple_files(struct smb2_context *smb2, const char *target_local, const char *target_remote)
@@ -1111,7 +1100,7 @@ static int put_multiple_files(struct smb2_context *smb2, const char *target_loca
   dir = opendir(directory_path);
   if (dir == NULL) {
     printf("ローカルディレクトリ '%s' を開けません: %s\n", directory_path, strerror(errno));
-    return -1;
+    return CMD_ERROR;
   }
 
   while ((ent = readdir(dir))) {
@@ -1177,7 +1166,7 @@ static int cmd_put(struct smb2_context *smb2, const char *local_path, const char
   struct smb2_stat_64 remote_st;
   
   if (local_path == NULL || strlen(local_path) == 0) {
-    return -1;
+    return CMD_HELP;
   }
   
   target_local = local_path;
@@ -1207,8 +1196,7 @@ static int cmd_put(struct smb2_context *smb2, const char *local_path, const char
     target_remote = remote_full_path;
   }
 
-  put_one_file(smb2, target_local, target_remote);
-  return 0;
+  return put_one_file(smb2, target_local, target_remote);
 }
 
 static int cmd_mput(struct smb2_context *smb2, const char *local_path, const char *remote_path)
@@ -1217,7 +1205,7 @@ static int cmd_mput(struct smb2_context *smb2, const char *local_path, const cha
   struct smb2_stat_64 remote_st;
   
   if (local_path == NULL || strlen(local_path) == 0) {
-    return -1;
+    return CMD_ERROR;
   }
   
   if (remote_path == NULL || strlen(remote_path) == 0) {
@@ -1229,17 +1217,39 @@ static int cmd_mput(struct smb2_context *smb2, const char *local_path, const cha
   if (!(smb2_stat(smb2, sjis_to_utf8(target_remote + 1), &remote_st) == 0 && 
         remote_st.smb2_type == SMB2_TYPE_DIRECTORY)) {
     printf("リモートパス '%s' はディレクトリではありません\n", target_remote);
-    return 0;
+    return CMD_ERROR;
   }
 
   int files_uploaded = put_multiple_files(smb2, local_path, target_remote);
   
   if (files_uploaded < 0) {
     printf("ファイルのアップロード中にエラーが発生しました\n");
+    return CMD_ERROR;
   } else {
     printf("%d 個のファイルをアップロードしました\n", files_uploaded);
+    return CMD_DONE;
   }
-  return 0;
+}
+
+//----------------------------------------------------------------------------
+
+static int cmd_date(struct smb2_context *smb2, const char *option)
+{
+  uint64_t server_time;
+
+  server_time = smb2_get_system_time(smb2);
+  // Convert NT time to Unix time
+  server_time = (server_time / 10 / 1000000) - 11644473600;
+
+  printf("サーバの現在時刻: %s\n", format_time((time_t)server_time));
+  if (option != NULL && strcmp(option, "-s") == 0) {
+    struct tm *tm = localtime((time_t *)&server_time);
+    _iocs_timeset(_iocs_timebcd((tm->tm_hour << 16) | (tm->tm_min << 8) | tm->tm_sec));
+    _iocs_bindateset(_iocs_bindatebcd(((tm->tm_year + 1900) << 16) | ((tm->tm_mon + 1) << 8) | tm->tm_mday));
+    printf("サーバの時刻をローカル時刻に設定しました\n");
+  }
+
+  return CMD_DONE;
 }
 
 //----------------------------------------------------------------------------
@@ -1255,13 +1265,13 @@ static int cmd_help(struct smb2_context *smb2, const char *command)
       printf("%-15s %s\n", cmd->name, cmd->usage);
     }
   }
-  return 0;
+  return CMD_DONE;
 }
 
 static int cmd_shell(struct smb2_context *smb2, const char *command)
 {
-  system(command ? command : "");
-  return 0;
+  int stat = system(command ? command : "");
+  return stat == 0 ? CMD_DONE : CMD_ERROR;
 }
 
 //----------------------------------------------------------------------------
@@ -1281,6 +1291,7 @@ static const struct cmd_table cmd_table[] = {
   {"mget",        cmd_mget,    2, "<remote_path> [local_path]", "複数リモートファイルのダウンロード"},
   {"put",         cmd_put,     2, "<local_path> [remote_path]", "ローカルファイルのアップロード"},
   {"mput",        cmd_mput,    2, "<local_path> [remote_path]", "複数ローカルファイルのアップロード"},
+  {"date",        cmd_date,    1, "[-s]",                       "サーバの現在時刻を表示(-sで時刻を設定)"},
   {"quit|exit",   NULL,        0, "",                           "プログラムの終了"},
   {"help",        cmd_help,    0, "[command]",                  "ヘルプの表示"},
   {NULL,          NULL,        0, NULL,                         NULL}
@@ -1292,7 +1303,7 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
   
   // Skip empty lines
   if (strlen(cmdline) == 0) {
-    return 0;
+    return CMD_DONE;
   }
 
   convert_path_separator(cmdline);
@@ -1312,7 +1323,7 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
   arg = trim_spaces(arg);
   
   if (cmd == NULL) {
-    return 0;
+    return CMD_DONE;
   }
 
   // Find command in table
@@ -1320,8 +1331,7 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
   int res;
   if (c == NULL) {
     printf("コマンドが違います: %s\n", cmd);
-    printf("'help' でコマンド一覧が表示されます\n");
-    return -1; // Unknown command
+    return CMD_HELP; // Unknown command
   }
 
   // Execute command
@@ -1335,10 +1345,10 @@ static int execute_command(struct smb2_context *smb2, char *cmdline)
     res = c->func(smb2, arg1, arg2);
   }
 
-  if (res < 0) {
+  if (res == CMD_HELP) {
     cmd_help(smb2, cmd);
   }
-  return 0;  // Continue execution
+  return res;  // Continue execution
 }
 
 static int execute_command_string(struct smb2_context *smb2, const char *command_string)
@@ -1363,8 +1373,9 @@ static int execute_command_string(struct smb2_context *smb2, const char *command
     char *trimmed = trim_spaces(cmd);
     if (trimmed != NULL) {
       result = execute_command(smb2, cmd);
-      if (result != 0) {
-        break;  // Exit command was issued
+      if (result != CMD_DONE) {
+        printf("コマンドの実行を中断しました\n");
+        break;
       }
     }
   }
@@ -1399,7 +1410,7 @@ static void share_enum_cb(struct smb2_context *smb2, int status,
     const char *comment = rep->ses.ShareInfo.Level1.Buffer->share_info_1[i].remark.utf8;
     uint32_t type = rep->ses.ShareInfo.Level1.Buffer->share_info_1[i].type;
 
-    printf("%-20s ", share_name);
+    printf("%-20s ", utf8_to_sjis(share_name));
 
     const char *typestr;
     switch (type & 3) {
@@ -1420,7 +1431,7 @@ static void share_enum_cb(struct smb2_context *smb2, int status,
       break;
     }
 
-    printf("%-10s %s\n", typestr, comment ? comment : "");
+    printf("%-10s %s\n", typestr, comment ? utf8_to_sjis(comment) : "");
   }
 
   smb2_free_data(smb2, rep);
@@ -1583,10 +1594,11 @@ static void usage(void)
     "使用法: smbclient <smb2-url> [options]\n"
     "オプション:\n"
     "    -U <username[%password]>   - 接続時のユーザ名とパスワードを指定\n"
+    "    -N                         - パスワードをユーザに問い合わせない\n"
     "    -L                         - サーバで利用可能なファイル共有一覧を表示\n"
     "    -c <commands>...           - コマンドを実行 (;で区切って複数指定可能)\n\n"
     "URL フォーマット:\n"
-    "    [smb://][<domain>;][<username>@]<host>[:<port>][/<share>]\n\n"
+    "    [smb://][<domain>;][<username>@]<host>[:<port>]/<share>[/<path>]\n\n"
     "環境変数 NTLM_USER_FILE で指定したファイルがユーザ情報に使用されます\n"
   );
 }
@@ -1602,20 +1614,18 @@ int main(int argc, char *argv[])
   struct smb2_url *url;
   int list_mode = 0;
   int command_mode = 0;
+  int nopass_mode = 0;
   int url_index = 0;
   char *username = NULL;
   char *password = NULL;
   char *command_string = NULL;
 
   // Parse command line options
-  if (argc < 2) {
-    usage();
-    exit(1);
-  }
-
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-L") == 0) {
       list_mode = 1;
+    } else if (strcmp(argv[i], "-N") == 0) {
+      nopass_mode = 1;
     } else if (strcmp(argv[i], "-U") == 0) {
       if (i + 1 < argc) {
         username = argv[++i];
@@ -1650,13 +1660,18 @@ int main(int argc, char *argv[])
           strcat(command_string, " ");
         }
       }
-    } else if (url_index == 0) {
+    } else if (argv[i][0] != '-' && url_index == 0) {
       url_index = i;  // First non-option argument is URL
     } else {
       // Unknown option
       usage();
       exit(1);
     }
+  }
+
+  if (url_index == 0) {
+    usage();
+    exit(1);
   }
 
   // Check whether TCP/IP is available
@@ -1676,12 +1691,14 @@ int main(int argc, char *argv[])
   convert_path_separator(argv[url_index]);
   char *normalized_url = normalize_smb_url(argv[url_index]);
 
+  #if 0
   // Debug: show URL conversion if input was modified
   if (strcmp(normalized_url, argv[url_index]) != 0) {
-//    printf("URL normalized: '%s' -> '%s'\n", argv[url_index], normalized_url);
+    printf("URL normalized: '%s' -> '%s'\n", argv[url_index], normalized_url);
   }
+  #endif
 
-  url = smb2_parse_url(smb2, normalized_url);
+  url = smb2_parse_url(smb2, sjis_to_utf8(normalized_url));
   if (url == NULL) {
     fprintf(stderr, "URL 指定に誤りがあります: %s\n", smb2_get_error(smb2));
     exit(1);
@@ -1697,8 +1714,8 @@ int main(int argc, char *argv[])
   if (password) {                 // Password is specified in command line (-U)
     smb2_set_password(smb2, password);
   }
-  if (smb2->password == NULL) {   // Password is not specified yet
-    printf("ユーザ名 %s のパスワードを入力: ", smb2->user);
+  if (!nopass_mode && smb2->password == NULL) {   // Password is not specified yet
+    printf("ユーザ名 %s のパスワードを入力: ", utf8_to_sjis(smb2->user));
     char *password = getpass("");
     if (password == NULL) {
       smb2_destroy_url(url);
@@ -1721,16 +1738,28 @@ int main(int argc, char *argv[])
     printf("ファイル共有サーバへの接続に失敗しました: %s\n", smb2_get_error(smb2));
     exit(1);
   }
+  if (url->path && strlen(url->path) > 0) {
+    char *initial_path = resolve_path(url->path);
+    if (cmd_cd(smb2, initial_path) != 0) {
+      smb2_disconnect_share(smb2);
+      smb2_destroy_context(smb2);
+      exit(1);
+    }
+  }
   smb2_destroy_url(url);
 
+  int result = 0;
   if (command_mode) {
     // Execute the specified command(s) and exit
-    execute_command_string(smb2, command_string);
+    result = execute_command_string(smb2, command_string);
     free(command_string);
   } else {
     // Interactive mode
     pthread_mutex_lock(&keepalive_mutex);
-    if (pthread_create(&keepalive_thread, NULL, keepalive_thread_func, smb2) != 0) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setname_np(&attr, "smbclient_keep");
+    if (pthread_create(&keepalive_thread, &attr, keepalive_thread_func, smb2) != 0) {
       printf("Failed to create keepalive thread\n");
       smb2_disconnect_share(smb2);
       smb2_destroy_context(smb2);
@@ -1759,8 +1788,11 @@ int main(int argc, char *argv[])
 
       trim_newline(cmdline.buffer);
       
-      if (execute_command(smb2, cmdline.buffer) == 1) {
+      int res = execute_command(smb2, cmdline.buffer);
+      if (res == CMD_EXIT) {
         break;  // Exit command was issued
+      } else if (res == CMD_HELP) {
+        printf("'help' でコマンド一覧が表示されます\n");
       }
     }
 
@@ -1771,5 +1803,5 @@ int main(int argc, char *argv[])
   pthread_join(keepalive_thread, NULL);
   smb2_disconnect_share(smb2);
   smb2_destroy_context(smb2);
-  return 0;
+  return result ? 1 : 0;
 }

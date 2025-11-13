@@ -34,7 +34,7 @@ CFLAGS = -Wall -Os -g $(INC) $(DEFS) -MMD -MP
 CFLAGS += -DGIT_REPO_VERSION=\"$(GIT_REPO_VERSION)\"
 ASFLAGS = -I. -MMD -MP
 LDFLAGS = -lsocket -lpthread
-LDFLAGS += -Wl,-Map,$(@:.x=.map)
+LDFLAGS += -Wl,-Map,$(@:.x=.map) -specs=nano.specs
 
 INC += -I. -I../include -I../iconv_mini/
 INC += -I../libsmb2/include -I../libsmb2/include/smb2
