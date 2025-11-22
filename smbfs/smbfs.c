@@ -44,9 +44,9 @@
 #include <iconv_mini.h>
 
 #include <humandefs.h>
+#include <config.h>
 #include <smbfscmd.h>
 
-#include "config.h"
 #include "smbfs.h"
 #include "fileop.h"
 

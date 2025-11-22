@@ -32,7 +32,7 @@ GIT_REPO_VERSION=$(shell git describe --tags --always)
 
 CFLAGS = -Wall -Os -g $(INC) $(DEFS) -MMD -MP
 CFLAGS += -DGIT_REPO_VERSION=\"$(GIT_REPO_VERSION)\"
-ASFLAGS = -I. -MMD -MP
+ASFLAGS = $(INC) -MMD -MP
 LDFLAGS = -lsocket -lpthread
 LDFLAGS += -Wl,-Map,$(@:.x=.map)
 
