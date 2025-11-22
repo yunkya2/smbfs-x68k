@@ -1561,7 +1561,7 @@ int interrupt(void)
 
   pthread_mutex_lock(&smbfs_data.keepalive_mutex);
 
-  switch (req->command) {
+  switch (req->command & 0x7f) {
   case 0x40: /* init */
   {
     req->command = 0; /* for Human68k bug workaround */
