@@ -37,6 +37,7 @@
 #include <smb2.h>
 #include <libsmb2.h>
 
+#include <config.h>
 #include <smbfscmd.h>
 
 //****************************************************************************
@@ -194,6 +195,14 @@ int get_smbfs_drive(int drive)
   char signature[8];
   if (drive == 0) {
     for (drive = 1; drive <= 26; drive++) {
+      struct dos_dpbptr dpb;
+      if (_dos_getdpb(drive, &dpb) < 0) {
+        continue;   // ドライブが存在しない
+      }
+      _iocs_b_memstr((char *)dpb.driver + 14, signature, 8);
+      if (memcmp(signature, CONFIG_DEVNAME, 8) != 0) {
+        continue;   // SMBFSドライブではない}
+      }
       if (_dos_ioctrlfdctl(drive, SMBCMD_GETNAME, signature) == 0 &&
           memcmp(signature, SMBFS_SIGNATURE, 8) == 0) {
         return drive;
