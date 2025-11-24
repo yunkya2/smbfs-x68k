@@ -187,7 +187,7 @@ help (?)       | ヘルプの表示
 
 ## ビルド方法
 
-[elf2x68k](https://github.com/yunkya2/elf2x68k) の 20251106 版以降が必要です。
+[elf2x68k](https://github.com/yunkya2/elf2x68k) の 20251124 版以降が必要です。
 
 ```
 git clone --recursive https://github.com/yunkya2/smbfs.git
