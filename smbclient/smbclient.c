@@ -1712,7 +1712,7 @@ int main(int argc, char *argv[])
   }
 
   smb2_set_security_mode(smb2, SMB2_NEGOTIATE_SIGNING_ENABLED);
-  if (smb2_connect_share(smb2, url->server, url->share, url->user) != 0) {
+  if (smb2_connect_share(smb2, url->server, url->share, NULL) != 0) {
     printf("ファイル共有サーバへの接続に失敗しました: %s\n", smb2_get_error(smb2));
     exit(1);
   }
