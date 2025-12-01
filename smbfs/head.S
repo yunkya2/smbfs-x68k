@@ -71,10 +71,22 @@ _start:
     add.l   _heap_size,%a1
     move.l  %a1,_HEND               // setup heap
     add.l   _stack_size,%a1
-    move.l  %a1,%sp                 // setup stack
+    cmpa.l  %a0@(8),%a1             // memory block bottom
+    bhi     out_of_memory
 
+    move.l  %a1,%sp                 // setup stack
     move.l  %a2,%sp@-               // command line address
     jsr     start
     .short  0xff00                  // exit
+
+out_of_memory:
+    pea.l   %pc@(oom_msg)
+    .short  0xff09                  // print
+    addq.l  #4,%sp
+    move.w  #0x007f,%sp@-
+    .short  0xff4c                  // exit2
+
+oom_msg:
+    .asciz  "Out of memory. Program terminated.\r\n"
 
     .end
