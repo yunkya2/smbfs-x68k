@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023,2025 Yuichi Nakamura (@yunkya2)
+ * Copyright (c) 2023,2025,2026 Yuichi Nakamura (@yunkya2)
  *
  * The MIT License (MIT)
  *
@@ -209,10 +209,22 @@ static inline int FUNC_CLOSE(int unit, int *err, TYPE_FD fd)
 }
 static inline ssize_t FUNC_READ(int unit, int *err, TYPE_FD fd, void *buf, size_t count)
 {
-  ssize_t r = smb2_read(fd2smb2(fd), fd2sfh(fd), buf, count);
+  ssize_t res = 0;
+  while (count > 0) {
+    ssize_t r = smb2_read(fd2smb2(fd), fd2sfh(fd), buf, count);
+    if (r < 0) {
+      res = r;
+      break;
+    }
+    if (r == 0)
+      break;
+    buf += r;
+    count -= r;
+    res += r;
+  }
   if (err)
-    *err = -r;
-  return r;
+    *err = -res;
+  return res;
 }
 static inline ssize_t FUNC_WRITE(int unit, int *err, TYPE_FD fd, const void *buf, size_t count)
 {
