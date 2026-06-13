@@ -191,7 +191,7 @@ help (?)       | ヘルプの表示
 [elf2x68k](https://github.com/yunkya2/elf2x68k) の 20251124 版以降が必要です。
 
 ```
-git clone --recursive https://github.com/yunkya2/smbfs.git
+git clone --recursive https://github.com/yunkya2/smbfs-x68k.git
 ```
 で、サブモジュール込みで clone した後、以下のコマンドでビルドします。
 
@@ -220,7 +220,7 @@ Windows ファイル共有へのアクセスにはライブラリ libsmb2 を使
 
 ## ライセンス
 
-Copyright (c) 2023,2024,2025 Yuichi Nakamura (@yunkya2)
+Copyright (c) 2023,2024,2025,2026 Yuichi Nakamura (@yunkya2)
 
 本プログラムは、オリジナルで開発したソースコードについては MIT ライセンスとします。その他利用されている以下のソフトウェアについては開発元のライセンス条件に従います。
 
